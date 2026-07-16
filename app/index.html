@@ -1,0 +1,38 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Cloinear</title>
+    <link
+      rel="icon"
+      href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%97%90%3C/text%3E%3C/svg%3E"
+    />
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <header class="topbar">
+      <div class="brand">
+        <span class="logo">◐</span>
+        <span class="brand-name">Cloinear</span>
+      </div>
+      <label class="project-picker">
+        <span class="sr-only">Project</span>
+        <select id="project-select" aria-label="Select project"></select>
+      </label>
+      <div class="topbar-spacer"></div>
+      <span id="ticket-count" class="ticket-count"></span>
+    </header>
+
+    <main id="board" class="board" aria-live="polite"></main>
+
+    <!-- Ticket detail drawer -->
+    <div id="drawer-overlay" class="drawer-overlay" hidden></div>
+    <aside id="drawer" class="drawer" hidden aria-hidden="true" role="dialog" aria-modal="true">
+      <button id="drawer-close" class="drawer-close" aria-label="Close">✕</button>
+      <div id="drawer-content" class="drawer-content"></div>
+    </aside>
+
+    <script type="module" src="app.js"></script>
+  </body>
+</html>
