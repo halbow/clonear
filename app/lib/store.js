@@ -1,6 +1,9 @@
-// Board storage backends. Both expose the same shape to the UI:
+// Board storage: a local folder opened with the File System Access API
+// (showDirectoryPicker). Read-write, watches the folder for outside changes.
+// FsBackend exposes this shape to the UI:
 //
-//   scan()                         -> { projects: [{ id, name, columns: [{ id, label, tickets }] }] }
+//   scan()                         -> { projects: [{ id, name, columns: [{ id, label, tickets }] }],
+//                                       rejected: [{ id, reason }] }
 //   readText(ticket)               -> the file's current content
 //   writeTicket(ticket, raw, opts) -> { lastModified }      (throws ConflictError)
 //   moveTicket(ticket, columnId)   -> { lastModified }
@@ -8,17 +11,17 @@
 //   deleteTicket(ticket)
 //   watch(onChange)                -> { mode, stop }
 //
-// - FsBackend: a local folder opened with the File System Access API
-//   (showDirectoryPicker). Read-write, watches the folder for outside changes.
-// - HttpBackend: the manifest.json produced by build.py, served over HTTP.
-//   Read-only; used for the GitHub Pages deploy.
-//
-// Data model: <projects root>/<project>/<column>/<TICKET-ID>.md, with an
-// optional <project>/project.md that sets the display name and column order.
+// Data model: <projects root>/<project>/<column>/<TICKET-ID>.md. Every project
+// folder needs a <project>/cloinear.md: it marks the folder as a Cloinear
+// project, pins the format version, sets the display name and column order, and
+// holds a ticket template for people and agents. Folders without it are refused.
 
 import { parseFrontmatter } from "./frontmatter.js";
 
 export const DEFAULT_COLUMNS = ["todo", "in-progress", "in-qa", "done"];
+// Version of the cloinear.md format this build understands.
+export const FORMAT_VERSION = 1;
+export const MARKER_FILE = "cloinear.md";
 
 const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
 export const SIZES = ["S", "M", "L"];
@@ -84,23 +87,30 @@ export function nextTicketId(project) {
   return `${prefix}-${max + 1}`;
 }
 
-function projectFromParts(id, projectMd, dirNames) {
-  let name = titleize(id);
-  let columns = [...DEFAULT_COLUMNS];
-  if (projectMd) {
-    const { data } = parseFrontmatter(projectMd);
-    if (typeof data.name === "string" && data.name) name = data.name;
-    if (Array.isArray(data.columns) && data.columns.length) columns = data.columns.filter(Boolean);
+// Build a project from its cloinear.md and column folder names. Returns
+// { error } when the folder must be refused.
+export function projectFromParts(id, cloinearMd, dirNames) {
+  if (cloinearMd == null) return { error: `no ${MARKER_FILE}` };
+  const { data } = parseFrontmatter(cloinearMd);
+  const version = Number(data.version);
+  if (!Number.isInteger(version) || version < 1) {
+    return { error: `${MARKER_FILE} has no valid "version"` };
   }
-  // Include every column folder that exists on disk, even if project.md omits it.
+  if (version > FORMAT_VERSION) {
+    return { error: `${MARKER_FILE} is version ${version}; this board supports up to ${FORMAT_VERSION}` };
+  }
+  const name = typeof data.name === "string" && data.name ? data.name : titleize(id);
+  const columns =
+    Array.isArray(data.columns) && data.columns.length ? data.columns.filter(Boolean) : [...DEFAULT_COLUMNS];
+  // Include every column folder that exists on disk, even if cloinear.md omits it.
   for (const d of dirNames) if (!columns.includes(d)) columns.push(d);
-  return { id, name, columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })) };
+  return { id, name, version, columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })) };
 }
 
 // --------------------------------------------------------------------------- //
 // File System Access backend
 // --------------------------------------------------------------------------- //
-export const fsSupported = typeof window.showDirectoryPicker === "function";
+export const fsSupported = typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 
 async function listEntries(dir) {
   const entries = [];
@@ -111,6 +121,8 @@ async function listEntries(dir) {
   return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+const hasMarker = (entries) => entries.some((e) => e.kind === "file" && e.name === MARKER_FILE);
+// Looks like a project but lacks cloinear.md: reported instead of silently skipped.
 const looksLikeProject = (entries) =>
   entries.some(
     (e) =>
@@ -119,7 +131,6 @@ const looksLikeProject = (entries) =>
   );
 
 export class FsBackend {
-  readOnly = false;
 
   constructor(root) {
     this.root = root;
@@ -134,34 +145,49 @@ export class FsBackend {
     return (await this.root.queryPermission({ mode: "readwrite" })) === "granted";
   }
 
-  // Accepts: a single project folder, a folder containing projects/ or tickets/,
-  // or a folder whose subfolders are projects.
+  // Accepts: a single project folder, a folder containing projects/ or tickets/
+  // (either a project itself or a folder of projects), or a folder whose
+  // subfolders are projects. Only folders with a cloinear.md
+  // are projects; lookalikes without one come back in `rejected`.
   async resolveProjects() {
     const entries = await listEntries(this.root);
-    if (looksLikeProject(entries)) return [{ id: this.root.name, dir: this.root, entries }];
+    if (hasMarker(entries)) return { found: [{ id: this.root.name, dir: this.root, entries }], rejected: [] };
+    if (looksLikeProject(entries)) return { found: [], rejected: [{ id: this.root.name, reason: `no ${MARKER_FILE}` }] };
 
     const container = entries.find((e) => e.kind === "directory" && CONTAINER_DIRS.includes(e.name));
     const baseEntries = container ? await listEntries(container.handle) : entries;
+    // tickets/ (or projects/) can itself be the project: tickets/cloinear.md, tickets/todo/…
+    if (container && hasMarker(baseEntries)) {
+      return { found: [{ id: container.name, dir: container.handle, entries: baseEntries }], rejected: [] };
+    }
     const found = [];
+    const rejected = [];
     for (const e of baseEntries) {
       if (e.kind !== "directory" || SKIP_DIRS.has(e.name)) continue;
       const sub = await listEntries(e.handle);
-      if (container || looksLikeProject(sub)) found.push({ id: e.name, dir: e.handle, entries: sub });
+      if (hasMarker(sub)) found.push({ id: e.name, dir: e.handle, entries: sub });
+      else if (container || looksLikeProject(sub)) rejected.push({ id: e.name, reason: `no ${MARKER_FILE}` });
     }
-    return found;
+    return { found, rejected };
   }
 
   async scan() {
-    const found = await this.resolveProjects();
-    const projects = await Promise.all(found.map((p) => this.scanProject(p)));
-    return { projects };
+    const { found, rejected } = await this.resolveProjects();
+    const scanned = await Promise.all(found.map((p) => this.scanProject(p)));
+    const projects = [];
+    for (const p of scanned) {
+      if (p.error) rejected.push({ id: p.id, reason: p.error });
+      else projects.push(p);
+    }
+    return { projects, rejected };
   }
 
   async scanProject({ id, dir, entries }) {
-    const projectMdEntry = entries.find((e) => e.kind === "file" && e.name === "project.md");
-    const projectMd = projectMdEntry ? await (await projectMdEntry.handle.getFile()).text() : null;
+    const markerEntry = entries.find((e) => e.kind === "file" && e.name === MARKER_FILE);
+    const cloinearMd = await (await markerEntry.handle.getFile()).text();
     const dirs = entries.filter((e) => e.kind === "directory");
-    const project = projectFromParts(id, projectMd, dirs.map((d) => d.name));
+    const project = projectFromParts(id, cloinearMd, dirs.map((d) => d.name));
+    if (project.error) return { id, error: project.error };
     project.dir = dir;
 
     await Promise.all(
@@ -296,52 +322,6 @@ async function fileExists(dir, name) {
     return true;
   } catch {
     return false;
-  }
-}
-
-// --------------------------------------------------------------------------- //
-// Read-only HTTP backend (manifest.json from build.py)
-// --------------------------------------------------------------------------- //
-export class HttpBackend {
-  readOnly = true;
-  name = "manifest.json";
-
-  constructor(baseUrl) {
-    this.baseUrl = baseUrl; // URL of the repo root, which holds manifest.json
-  }
-
-  async scan() {
-    const res = await fetch(new URL("manifest.json", this.baseUrl), { cache: "no-cache" });
-    if (!res.ok) throw new Error(`manifest.json: HTTP ${res.status}`);
-    const manifest = await res.json();
-    const projects = await Promise.all(
-      (manifest.projects || []).map(async (p) => {
-        const project = projectFromParts(p.id, null, []);
-        project.name = p.name;
-        project.columns = await Promise.all(
-          (p.columnOrder || Object.keys(p.columns)).map(async (colId) => ({
-            id: colId,
-            label: (p.columnLabels && p.columnLabels[colId]) || titleize(colId),
-            tickets: sortTickets(
-              await Promise.all(
-                (p.columns[colId] || []).map(async (t) => {
-                  const raw = await fetch(new URL(t.path, this.baseUrl), { cache: "no-cache" })
-                    .then((r) => (r.ok ? r.text() : ""))
-                    .catch(() => "");
-                  return { ...ticketFromText(t.id, raw), path: t.path, projectId: p.id, column: colId };
-                })
-              )
-            ),
-          }))
-        );
-        return project;
-      })
-    );
-    return { projects };
-  }
-
-  async watch() {
-    return { mode: "read-only", stop() {} };
   }
 }
 

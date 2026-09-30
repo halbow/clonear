@@ -1,6 +1,6 @@
 // The board must never talk to another origin. The browser enforces this
 // through the CSP in app/index.html; these tests keep that policy strict and
-// flag any new network API in the source so it gets a deliberate review.
+// fail if a network API shows up in the source.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -18,7 +18,7 @@ function csp(html) {
 const EXPECTED = {
   "default-src": ["'none'"],
   "img-src": ["data:"],
-  "connect-src": ["'self'"],
+  "connect-src": ["'none'"],
   "form-action": ["'none'"],
   "base-uri": ["'none'"],
 };
@@ -39,13 +39,11 @@ test("dist/cloinear.html: only the bundled scripts may run", () => {
   assert.ok(scriptSrc.length > 0 && scriptSrc.every((v) => v.startsWith("'sha256-")), scriptSrc.join(" "));
 });
 
-test("network APIs appear only where reviewed", () => {
+test("the app uses no network API", () => {
   const NETWORK = /\b(fetch|XMLHttpRequest|WebSocket|EventSource|sendBeacon|RTCPeerConnection|importScripts|Worker)\s*\(|new\s+(WebSocket|EventSource|Worker|SharedWorker|RTCPeerConnection|XMLHttpRequest)\b/g;
-  // store.js: HttpBackend reads manifest.json and tickets from the same origin.
-  const ALLOWED = { "lib/store.js": 2 };
   const files = ["app.js", ...readdirSync(new URL("../app/lib", import.meta.url)).map((f) => `lib/${f}`)];
   for (const f of files.filter((f) => f.endsWith(".js"))) {
     const hits = read(`app/${f}`).match(NETWORK) || [];
-    assert.equal(hits.length, ALLOWED[f] || 0, `${f}: ${hits.join(", ")}`);
+    assert.deepEqual(hits, [], f);
   }
 });

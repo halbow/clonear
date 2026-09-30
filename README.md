@@ -1,22 +1,22 @@
 # Cloinear
 
 A tiny, Linear-style kanban board whose **backend is just folders and files**.
-No database, no npm, no server:
+No database, no npm, no server: one HTML file, `dist/cloinear.html`.
 
-- **Drop-in board:** copy the single file `dist/cloinear.html` into any repo, open
-  it in Chrome/Edge/Arc, pick the ticket folder once, and you can drag, edit, create
-  and delete tickets. Every change is written straight to the `.md` files, and changes
-  made on disk (by you, git, or an agent) show up on the board within a second.
-- **Read-only site** for **GitHub Pages**, built from this repo's `projects/`.
+Copy it into any repo (or use the GitHub Pages copy), open it in Chrome/Edge/Arc,
+pick the ticket folder once, and you can drag, edit, create and delete tickets.
+Every change is written straight to the `.md` files, and changes made on disk (by
+you, git, or an agent) show up on the board within a second.
 
-- **Projects** are folders under `projects/`.
+- **A project** is a folder with a `cloinear.md` at its root, e.g. `tickets/`.
+  Need several? Put one folder per project under `projects/`.
 - **Columns** (`todo`, `in-progress`, `in-qa`, `done`) are subfolders.
 - **Tickets** are markdown files inside a column folder.
 
 Moving a ticket = moving its file to another column folder. Editing a ticket =
 editing its file.
 
-## Drop-in board (`dist/cloinear.html`)
+## Using the board
 
 ```bash
 cp dist/cloinear.html ~/code/my-app/      # next to projects/ (or tickets/)
@@ -25,9 +25,12 @@ open ~/code/my-app/cloinear.html          # needs a Chromium browser
 
 Click **Open folder** and pick the folder that holds your tickets. Any of these works:
 
-- a folder containing `projects/` or `tickets/` (e.g. your repo root),
-- a folder whose subfolders are projects (`<project>/todo/…`),
-- a single project folder with `todo/`, `in-progress/`, `done/`… inside.
+- a folder containing `tickets/` or `projects/` (e.g. your repo root); that folder
+  is either the project itself or holds one folder per project,
+- a folder whose subfolders are projects (`<project>/cloinear.md`, `<project>/todo/…`),
+- a single project folder with `cloinear.md`, `todo/`, `in-progress/`, `done/`… inside.
+
+Folders without a `cloinear.md` are refused: the board lists them and says why.
 
 The board remembers the folder for that page. On later visits it opens it
 automatically, or asks with one click, depending on the permission Chrome kept.
@@ -46,50 +49,94 @@ version, or apply your changes on top of it.
 **Limits:** it only works in Chrome, Edge, Arc and other Chromium browsers, because it
 uses the File System Access API. Safari and Firefox show a notice instead.
 
+## Privacy: no network access
+
+The board only reads and writes the folder you pick. It never talks to a server.
+The browser enforces this: the page's Content-Security-Policy (first `<meta>` in
+`dist/cloinear.html`) is
+
+```
+default-src 'none'; connect-src 'none'; img-src data:; form-action 'none'; …
+```
+
+so every request (fetch, images, fonts, scripts, WebSockets, beacons, form posts)
+is refused, even if the code tried. Scripts are pinned by SHA-256 hash, so only
+the bundled code can run. `tests/no-network.test.mjs` fails if the policy is
+loosened or a network API shows up in `app/`.
+
+To check it yourself: open DevTools → Network while you use the board, or turn
+off Wi-Fi and see that it works the same. For the strongest guarantee, download
+`dist/cloinear.html` and run the local copy, which you can inspect and hash; the
+Pages copy changes with each deploy.
+
 ## How it works
 
-The UI in `app/` talks to one of two storage backends (`app/lib/store.js`):
-
-```
-local folder ──File System Access API──> app/  (read-write, live)
-projects/ ──build.py──> manifest.json ──fetch──> app/  (read-only, GitHub Pages)
-```
-
-- `bundle.py` inlines `app/` (HTML, CSS and JS modules) into `dist/cloinear.html`.
-  Browsers refuse `<script src>` modules and `fetch()` on `file://` pages, which is
-  why the drop-in board has to be a single file.
-- `build.py` scans `projects/` into `manifest.json`, because a static host can't
-  list directories. `manifest.json` is generated in CI (git-ignored).
-- `.github/workflows/pages.yml` runs `build.py`, checks `dist/cloinear.html` is up to
-  date, and deploys to Pages on push.
-
-Both scripts are zero-dependency Python 3 (standard library only).
+`bundle.py` inlines `app/` (HTML, CSS and JS modules) into `dist/cloinear.html`.
+Browsers refuse `<script src>` modules on `file://` pages, which is why the board
+is a single file. The UI reads and writes the folder through the File System
+Access API (`app/lib/store.js`). `bundle.py` is zero-dependency Python 3.
 
 ## Repository layout
 
 ```
-projects/                     # DATA — the "backend"
+tickets/                      # this repo's own tickets — open the repo root to see them
+  cloinear.md                 # required: format version, name, columns, ticket template
+  todo/CLO-2.md
+  done/CLO-1.md
+demo/                         # demo / test data — open this folder to try the board
   web-app/
-    project.md                # optional: display name + column order
+    cloinear.md
     todo/WEB-1.md
     in-progress/WEB-2.md
     in-qa/WEB-5.md
     done/WEB-3.md
+  mobile-app/
 app/                          # UI (never mixed with data)
   index.html  app.js  styles.css
   lib/frontmatter.js          # parse / rewrite ticket files, render markdown
-  lib/store.js                # storage backends (local folder, manifest.json)
+  lib/search.js               # ticket search
+  lib/store.js                # read / write the local folder
 dist/cloinear.html            # generated single-file board (committed; run bundle.py)
 tests/                        # node --test tests/*.test.mjs
-build.py                      # scanner -> manifest.json
 bundle.py                     # app/ -> dist/cloinear.html
-index.html                    # redirect to dist/cloinear.html (entry point)
-manifest.json                 # generated (git-ignored)
 ```
+
+## cloinear.md
+
+Every project folder has a `cloinear.md` next to its column folders:
+
+```
+tickets/
+  cloinear.md
+  todo/
+  in-progress/
+  done/
+```
+
+It does three things:
+
+- **Marks the folder as a Cloinear project.** The board refuses folders without one.
+- **Pins the format version** (`version: 1`). A board older than the file refuses it
+  instead of misreading it.
+- **Documents the ticket format.** Its body has a full template ticket with every
+  field filled in and the allowed values, so an agent can read it and create or edit
+  tickets correctly.
+
+```markdown
+---
+version: 1                                 # required: cloinear.md format version
+name: Mobile App                           # optional: display name (default: from folder name)
+columns: [todo, in-progress, in-qa, done]  # optional: column order (default shown)
+---
+
+Description, then the ticket template (see tickets/cloinear.md).
+```
+
+Column folders that exist on disk but are missing from `columns` are added at the end.
 
 ## Ticket format
 
-`projects/<project>/<column>/<TICKET-ID>.md`:
+`tickets/<column>/<TICKET-ID>.md` (or `projects/<project>/<column>/<TICKET-ID>.md`):
 
 ```markdown
 ---
@@ -109,83 +156,38 @@ folder decides the column.
 
 ### Adding / moving / editing tickets
 
-The quickest way is the [`justfile`](#task-runner-just) recipes:
+Use the board, or do it by hand — it's just files:
 
 ```bash
-just new web-app todo "Fix flaky logout" high alexis bug,auth M  # create (auto-ids WEB-6)
-just move web-app WEB-6 in-progress                            # move across the board
-just edit web-app WEB-6                                        # open in $EDITOR
-just rm web-app WEB-6                                          # delete
-```
-
-Or do it by hand — it's just files:
-
-```bash
-$EDITOR projects/web-app/todo/WEB-9.md
-git mv projects/web-app/todo/WEB-9.md projects/web-app/in-progress/WEB-9.md
-git add -A && git commit -m "WEB-9: start work" && git push   # Pages rebuilds automatically
+$EDITOR tickets/todo/CLO-9.md
+git mv tickets/todo/CLO-9.md tickets/in-progress/CLO-9.md
 ```
 
 ### Adding a project
 
-Create `projects/<name>/` with column subfolders. Optionally add a `project.md`:
+For a single board, create `tickets/` with column subfolders and copy this repo's
+`tickets/cloinear.md` into it (change `name` and the ticket prefix). For several,
+create `projects/<name>/` for each one, laid out the same way.
 
-```markdown
----
-name: Mobile App
-columns: [todo, in-progress, in-qa, done]
----
-```
+## Development
 
-Without `project.md`, the default columns are used and the display name is derived
-from the folder name.
-
-## Task runner (`just`)
-
-If you have [`just`](https://github.com/casey/just), the `justfile` wraps every
-common action (each one rebuilds `manifest.json` afterwards). Run `just` to list them:
+Edit `app/`, then run `python3 bundle.py` (or `just bundle`) and reload
+`dist/cloinear.html`. CI fails if the bundle is stale.
 
 | Recipe | What it does |
 | --- | --- |
-| `just build` | Regenerate `manifest.json` |
-| `just bundle` | Regenerate `dist/cloinear.html` after changing `app/` |
+| `just open` | Open `dist/cloinear.html` in your default browser |
+| `just bundle` | Regenerate `dist/cloinear.html` from `app/` |
 | `just test` | Run the unit tests (needs Node) |
-| `just check` | Fail if `manifest.json` or `dist/cloinear.html` is stale |
-| `just serve [port]` | Build, then serve at `http://localhost:8000` |
-| `just list [project]` | List projects, or one project's tickets by column |
-| `just new <project> <column> "<title>" [priority] [assignee] [labels] [size]` | Create a ticket (auto-generates the id) |
-| `just move <project> <id> <column>` | Move a ticket to another column |
-| `just edit <project> <id>` | Open a ticket in `$EDITOR` |
-| `just rm <project> <id>` | Delete a ticket |
-| `just new-project <id> ["Display Name"]` | Scaffold a project with the default columns |
+| `just check` | Run the tests and fail if `dist/cloinear.html` is stale |
 
-`move` / `rm` use `git mv` / `git rm` automatically when run inside a git repo,
-and fall back to plain `mv` / `rm` otherwise.
+## GitHub Pages
 
-## Run locally
-
-To edit this repo's tickets, open `dist/cloinear.html` and pick the repo folder.
-
-To preview the read-only Pages site, serve the repo over HTTP:
-
-```bash
-python3 build.py             # generate manifest.json
-python3 -m http.server 8000  # serve the repo root
-# open http://localhost:8000
-```
-
-When developing the UI, edit `app/` and serve it the same way (`app/index.html` loads
-the modules directly). Run `python3 bundle.py` before committing so
-`dist/cloinear.html` stays in sync. CI fails otherwise.
-
-## Deploy to GitHub Pages
-
-1. Push this repo to GitHub (default branch `main`).
-2. **Settings → Pages → Build and deployment → Source: GitHub Actions**.
-3. Push any change — the workflow runs `build.py` and publishes the board.
+`.github/workflows/pages.yml` runs the checks and publishes `dist/cloinear.html`
+as the site's index page on every push to `main`. Enable it once under
+**Settings → Pages → Build and deployment → Source: GitHub Actions**.
 
 ## Roadmap
 
-- Write-back from the hosted Pages site via the GitHub API.
 - Reordering cards within a column (cards are sorted by priority, then date).
-- Search / filtering, cycles, comments.
+- Filtering, cycles, comments.

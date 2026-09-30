@@ -3,7 +3,6 @@ import { scoreTicket } from "./lib/search.js";
 import {
   ConflictError,
   FsBackend,
-  HttpBackend,
   SIZES,
   fsSupported,
   loadHandle,
@@ -94,12 +93,6 @@ async function boot() {
     if (await backend.hasPermission().catch(() => false)) return connect(backend);
     return renderStart({ stored });
   }
-  if (location.protocol.startsWith("http")) {
-    // Hosted next to build.py's manifest.json (e.g. GitHub Pages): read-only view.
-    const http = new HttpBackend(new URL("../", location.href));
-    const board = await http.scan().catch(() => null);
-    if (board && board.projects.length) return connect(http, board);
-  }
   renderStart({});
 }
 
@@ -121,12 +114,11 @@ async function reconnect(handle) {
   else toast("Permission to the folder was not granted.", "error");
 }
 
-async function connect(backend, board) {
+async function connect(backend) {
   if (state.watcher) state.watcher.stop();
   closeDrawer();
   Object.assign(state, { backend, watcher: null, board: null, signature: "" });
-  if (board) applyBoard(board);
-  else await refresh();
+  await refresh();
   if (state.backend !== backend || !state.board) return;
   state.watcher = await backend.watch(refresh);
   renderTopbar();
@@ -170,16 +162,22 @@ function refresh() {
 }
 
 function applyBoard(board) {
-  const signature = JSON.stringify(
+  const signature = JSON.stringify([
+    board.rejected,
     board.projects.map((p) => [
       p.id,
       p.name,
       p.columns.map((c) => [c.id, c.tickets.map((t) => [t.id, t.lastModified, t.bytes, t.size, t.raw.length])]),
-    ])
-  );
+    ]),
+  ]);
   if (signature === state.signature) return;
   state.signature = signature;
+  const before = new Set(state.board ? state.board.rejected.map((r) => r.id) : []);
   state.board = board;
+  const newlyRejected = board.rejected.filter((r) => !before.has(r.id));
+  if (board.projects.length && newlyRejected.length) {
+    toast(`Skipped ${newlyRejected.map((r) => `${r.id} (${r.reason})`).join(", ")}.`, "error");
+  }
 
   renderProjectSelect();
   if (!board.projects.length) {
@@ -230,7 +228,7 @@ function renderTopbar() {
   const backend = state.backend;
   const hasBoard = !!(backend && state.board && state.board.projects.length);
   els.select.hidden = !hasBoard;
-  els.newTicket.hidden = !hasBoard || backend.readOnly;
+  els.newTicket.hidden = !hasBoard;
   els.count.hidden = !hasBoard;
   els.searchBox.hidden = !hasBoard;
 
@@ -240,14 +238,9 @@ function renderTopbar() {
   } else {
     els.sync.hidden = false;
     els.sync.className = `sync-status sync-${mode}`;
-    els.sync.textContent =
-      mode === "live" ? backend.name : mode === "polling" ? backend.name : "Read-only";
+    els.sync.textContent = backend.name;
     els.sync.title =
-      mode === "live"
-        ? "Watching the folder for changes"
-        : mode === "polling"
-          ? "Checking the folder for changes every 1.5s"
-          : "Served from manifest.json. Open a local folder to edit.";
+      mode === "live" ? "Watching the folder for changes" : "Checking the folder for changes every 1.5s";
   }
 }
 
@@ -270,11 +263,19 @@ function renderStart({ stored = null, reason = "", empty = false }) {
       <p>Cloinear reads and writes your ticket folder with the File System Access API,
       which only Chromium-based browsers support.</p>`;
   } else if (empty) {
+    const rejected = state.board ? state.board.rejected : [];
     body = `
-      <h2>No projects in “${escapeHtml(state.backend.name)}”</h2>
-      <p>Pick a folder laid out like <code>&lt;project&gt;/todo/TICKET-1.md</code>,
-      a folder containing <code>projects/</code>, or a single project folder with
-      <code>todo/</code>, <code>done/</code>… subfolders.</p>
+      <h2>No Cloinear project in “${escapeHtml(state.backend.name)}”</h2>
+      <p>Each project folder needs a <code>cloinear.md</code> next to its <code>todo/</code>,
+      <code>done/</code>… subfolders. Pick a project folder, a folder of projects, or a
+      folder containing <code>tickets/</code> or <code>projects/</code>.</p>
+      ${
+        rejected.length
+          ? `<ul class="start-rejected">${rejected
+              .map((r) => `<li><strong>${escapeHtml(r.id)}</strong>: ${escapeHtml(r.reason)}</li>`)
+              .join("")}</ul>`
+          : ""
+      }
       <div class="start-actions"><button class="btn btn-primary" data-action="pick">Choose another folder</button></div>`;
   } else if (stored) {
     body = `
@@ -287,8 +288,8 @@ function renderStart({ stored = null, reason = "", empty = false }) {
   } else {
     body = `
       <h2>Open a ticket folder</h2>
-      <p>Pick the folder that holds your tickets: the one containing <code>projects/</code>,
-      or a project folder with <code>todo/</code>, <code>in-progress/</code>, <code>done/</code>…
+      <p>Pick the folder that holds your tickets: the one containing <code>tickets/</code>,
+      or a project folder with a <code>cloinear.md</code> and <code>todo/</code>, <code>done/</code>…
       Changes you make here are written straight to the <code>.md</code> files, and changes made
       on disk show up here live.</p>
       <div class="start-actions"><button class="btn btn-primary" data-action="pick">Open folder</button></div>`;
@@ -308,7 +309,6 @@ function renderBoard() {
   state.renderPending = false;
   const project = currentProject();
   if (!project) return;
-  const readOnly = state.backend.readOnly;
   const query = state.query.trim();
   let total = 0;
   let shown = 0;
@@ -332,7 +332,7 @@ function renderBoard() {
       <div class="column-header">
         <span class="column-title">${escapeHtml(col.label)}</span>
         <span class="column-count">${tickets.length}</span>
-        ${readOnly ? "" : `<button class="column-add" title="New ticket in ${escapeAttr(col.label)}" aria-label="New ticket in ${escapeAttr(col.label)}">+</button>`}
+        <button class="column-add" title="New ticket in ${escapeAttr(col.label)}" aria-label="New ticket in ${escapeAttr(col.label)}">+</button>
       </div>
       <div class="column-cards"></div>
     `;
@@ -340,12 +340,10 @@ function renderBoard() {
     if (tickets.length === 0) {
       cardsEl.innerHTML = `<div class="column-empty">${query ? "No matches" : "No tickets"}</div>`;
     } else {
-      for (const ticket of tickets) cardsEl.appendChild(renderCard(ticket, readOnly));
+      for (const ticket of tickets) cardsEl.appendChild(renderCard(ticket));
     }
-    if (!readOnly) {
-      column.querySelector(".column-add").addEventListener("click", () => openCreate(project.id, col.id));
-      bindDropTarget(column, project.id, col.id);
-    }
+    column.querySelector(".column-add").addEventListener("click", () => openCreate(project.id, col.id));
+    bindDropTarget(column, project.id, col.id);
     els.board.appendChild(column);
   }
   els.count.hidden = false;
@@ -354,7 +352,7 @@ function renderBoard() {
     : `${total} ticket${total === 1 ? "" : "s"}`;
 }
 
-function renderCard(ticket, readOnly) {
+function renderCard(ticket) {
   const prio = PRIORITIES[ticket.priority];
   const card = document.createElement("article");
   card.className = "card";
@@ -388,21 +386,19 @@ function renderCard(ticket, readOnly) {
     }
   });
 
-  if (!readOnly) {
-    card.draggable = true;
-    card.addEventListener("dragstart", (e) => {
-      state.dragging = { projectId: ticket.projectId, ticketId: ticket.id };
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", ticket.id);
-      requestAnimationFrame(() => card.classList.add("dragging"));
-    });
-    card.addEventListener("dragend", () => {
-      card.classList.remove("dragging");
-      state.dragging = null;
-      document.querySelectorAll(".drop-target").forEach((el) => el.classList.remove("drop-target"));
-      if (state.renderPending) renderBoard();
-    });
-  }
+  card.draggable = true;
+  card.addEventListener("dragstart", (e) => {
+    state.dragging = { projectId: ticket.projectId, ticketId: ticket.id };
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", ticket.id);
+    requestAnimationFrame(() => card.classList.add("dragging"));
+  });
+  card.addEventListener("dragend", () => {
+    card.classList.remove("dragging");
+    state.dragging = null;
+    document.querySelectorAll(".drop-target").forEach((el) => el.classList.remove("drop-target"));
+    if (state.renderPending) renderBoard();
+  });
   return card;
 }
 
@@ -459,7 +455,6 @@ function openTicket(projectId, ticketId) {
   const ticket = findTicket(projectId, ticketId);
   if (!ticket) return;
   if (state.drawer) closeDrawer();
-  const readOnly = state.backend.readOnly;
   state.drawer = {
     mode: "edit",
     projectId,
@@ -471,19 +466,19 @@ function openTicket(projectId, ticketId) {
     saveTimer: null,
     conflict: false,
     deleted: false,
-    bodyMode: readOnly || ticket.body.trim() ? "preview" : "write",
+    bodyMode: ticket.body.trim() ? "preview" : "write",
   };
-  buildDrawer({ readOnly });
+  buildDrawer();
   fillDrawer(ticket);
   showDrawer();
 }
 
 function openCreate(projectId, columnId) {
   const project = state.board.projects.find((p) => p.id === projectId);
-  if (!project || state.backend.readOnly) return;
+  if (!project) return;
   if (state.drawer) closeDrawer();
   state.drawer = { mode: "create", projectId, column: columnId || project.columns[0].id, bodyMode: "write" };
-  buildDrawer({ readOnly: false });
+  buildDrawer();
   fillDrawer({
     id: nextTicketId(project),
     title: "",
@@ -499,10 +494,9 @@ function openCreate(projectId, columnId) {
   document.getElementById("f-title").focus();
 }
 
-function buildDrawer({ readOnly }) {
+function buildDrawer() {
   const d = state.drawer;
   const project = state.board.projects.find((p) => p.id === d.projectId);
-  const dis = readOnly ? "disabled" : "";
   const columnOptions = project.columns
     .map((c) => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.label)}</option>`)
     .join("");
@@ -517,16 +511,16 @@ function buildDrawer({ readOnly }) {
       <span class="dt-save" id="dt-save"></span>
     </div>
     <div class="dt-banner" id="dt-banner" hidden></div>
-    <textarea class="dt-title" id="f-title" rows="1" placeholder="Ticket title" ${dis}></textarea>
+    <textarea class="dt-title" id="f-title" rows="1" placeholder="Ticket title"></textarea>
     <div class="dt-meta">
-      <label><span>Status</span><select id="f-column" ${dis}>${columnOptions}</select></label>
-      <label><span>Priority</span><select id="f-priority" ${dis}>${prioOptions}</select></label>
-      <label><span>Size</span><select id="f-size" ${dis}>${sizeOptions}</select></label>
-      <label id="f-assignee-row"><span>Assignee</span><input id="f-assignee" placeholder="—" ${dis} /></label>
-      <label><span>Labels</span><input id="f-labels" placeholder="bug, auth" ${dis} /></label>
+      <label><span>Status</span><select id="f-column">${columnOptions}</select></label>
+      <label><span>Priority</span><select id="f-priority">${prioOptions}</select></label>
+      <label><span>Size</span><select id="f-size">${sizeOptions}</select></label>
+      <label id="f-assignee-row"><span>Assignee</span><input id="f-assignee" placeholder="—" /></label>
+      <label><span>Labels</span><input id="f-labels" placeholder="bug, auth" /></label>
       <label id="f-created-row"><span>Created</span><span id="f-created" class="dt-static"></span></label>
     </div>
-    <div class="dt-tabs" ${readOnly ? "hidden" : ""}>
+    <div class="dt-tabs">
       <button type="button" data-mode="write">Write</button>
       <button type="button" data-mode="preview">Preview</button>
     </div>
@@ -539,9 +533,7 @@ function buildDrawer({ readOnly }) {
           d.mode === "create"
             ? `<button type="button" class="btn" data-action="cancel">Cancel</button>
                <button type="button" class="btn btn-primary" data-action="create">Create ticket</button>`
-            : readOnly
-              ? ""
-              : `<button type="button" class="btn btn-danger" data-action="delete">Delete</button>`
+            : `<button type="button" class="btn btn-danger" data-action="delete">Delete</button>`
         }
       </span>
     </div>
@@ -565,7 +557,7 @@ function buildDrawer({ readOnly }) {
   });
   $("f-body").addEventListener("input", () => autoGrow($("f-body")));
   $("f-preview").addEventListener("click", (e) => {
-    if (!readOnly && !e.target.closest("a")) setBodyMode("write", { focus: true });
+    if (!e.target.closest("a")) setBodyMode("write", { focus: true });
   });
   els.drawerContent.querySelectorAll(".dt-tabs button").forEach((b) =>
     b.addEventListener("click", () => setBodyMode(b.dataset.mode, { focus: b.dataset.mode === "write" }))
@@ -609,8 +601,6 @@ function fillDrawer(t) {
   $("f-body").value = t.body;
   if (d.mode === "create") {
     $("f-path").textContent = `${d.projectId}/${t.column}/${t.id}.md`;
-  } else if (state.backend instanceof HttpBackend) {
-    $("f-path").innerHTML = `<a href="${escapeAttr(new URL(t.path, state.backend.baseUrl))}" target="_blank" rel="noopener">${escapeHtml(t.path)}</a>`;
   } else {
     $("f-path").textContent = t.path;
   }
@@ -874,7 +864,7 @@ function onGlobalKey(e) {
   } else if (
     e.key === "c" && !d && !e.metaKey && !e.ctrlKey && !e.altKey &&
     !e.target.closest("input, textarea, select") &&
-    state.backend && !state.backend.readOnly && currentProject()
+    state.backend && currentProject()
   ) {
     e.preventDefault();
     openCreate(state.projectId);

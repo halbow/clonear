@@ -3,15 +3,14 @@
   <head>
     <meta charset="UTF-8" />
     <!--
-      Network lockdown, enforced by the browser: nothing may be loaded from or
-      sent to another origin. connect-src 'self' only allows the read-only
-      manifest.json mode to fetch from the site that served this page.
+      Network lockdown, enforced by the browser: the page can't fetch or send
+      anything, anywhere. It only reads and writes the folder you pick.
       bundle.py swaps 'unsafe-inline' in script-src for the hashes of the
       inlined scripts, so only the bundled code can run.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'self'; form-action 'none'; base-uri 'none'"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cloinear</title>

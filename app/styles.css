@@ -354,6 +354,7 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .start-actions { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
+.start-rejected { display: inline-block; text-align: left; color: var(--text-dim); margin: 8px 0 0; padding-left: 20px; }
 
 /* ---- column add & drag and drop ---- */
 .column-add {
@@ -428,14 +429,12 @@ textarea.dt-title {
 }
 .dt-meta .dt-static { padding: 5px 0; }
 
-textarea.dt-title:hover:not(:disabled),
+textarea.dt-title:hover,
 .dt-editor:hover { border-color: var(--border); }
 textarea.dt-title:focus,
 .dt-meta input:focus,
 .dt-meta select:focus,
 .dt-editor:focus { outline: none; border-color: var(--accent); }
-.dt-meta input:disabled,
-.dt-meta select:disabled { background: transparent; border-color: transparent; padding-left: 0; opacity: 1; appearance: none; }
 
 .dt-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
 .dt-tabs button {

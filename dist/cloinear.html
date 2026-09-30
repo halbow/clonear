@@ -4,15 +4,14 @@
   <head>
     <meta charset="UTF-8" />
     <!--
-      Network lockdown, enforced by the browser: nothing may be loaded from or
-      sent to another origin. connect-src 'self' only allows the read-only
-      manifest.json mode to fetch from the site that served this page.
+      Network lockdown, enforced by the browser: the page can't fetch or send
+      anything, anywhere. It only reads and writes the folder you pick.
       bundle.py swaps 'unsafe-inline' in script-src for the hashes of the
       inlined scripts, so only the bundled code can run.
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-HrdQdGdVsN17AVqdQATDtsZSnYqoD8Adv4k6kSCr5YU=' 'sha256-Ma2VkxUGcykBpiGjBbqkufJ+YRGLEi9mBCKt5C7hwrI='; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'self'; form-action 'none'; base-uri 'none'"
+      content="default-src 'none'; script-src 'sha256-HrdQdGdVsN17AVqdQATDtsZSnYqoD8Adv4k6kSCr5YU=' 'sha256-szPIeUZnsa5xFHC+xpVlGag+wYhPLCMrVrVHtMMiWA8='; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cloinear</title>
@@ -384,6 +383,7 @@ body {
   font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
 }
 .start-actions { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
+.start-rejected { display: inline-block; text-align: left; color: var(--text-dim); margin: 8px 0 0; padding-left: 20px; }
 
 /* ---- column add & drag and drop ---- */
 .column-add {
@@ -458,14 +458,12 @@ textarea.dt-title {
 }
 .dt-meta .dt-static { padding: 5px 0; }
 
-textarea.dt-title:hover:not(:disabled),
+textarea.dt-title:hover,
 .dt-editor:hover { border-color: var(--border); }
 textarea.dt-title:focus,
 .dt-meta input:focus,
 .dt-meta select:focus,
 .dt-editor:focus { outline: none; border-color: var(--accent); }
-.dt-meta input:disabled,
-.dt-meta select:disabled { background: transparent; border-color: transparent; padding-left: 0; opacity: 1; appearance: none; }
 
 .dt-tabs { display: flex; gap: 4px; margin-bottom: 8px; }
 .dt-tabs button {
@@ -858,9 +856,12 @@ return { normalize, fuzzyScore, scoreTicket };
 
 // ---- app/lib/store.js ----
 const __mod_lib_store = (() => {
-// Board storage backends. Both expose the same shape to the UI:
+// Board storage: a local folder opened with the File System Access API
+// (showDirectoryPicker). Read-write, watches the folder for outside changes.
+// FsBackend exposes this shape to the UI:
 //
-//   scan()                         -> { projects: [{ id, name, columns: [{ id, label, tickets }] }] }
+//   scan()                         -> { projects: [{ id, name, columns: [{ id, label, tickets }] }],
+//                                       rejected: [{ id, reason }] }
 //   readText(ticket)               -> the file's current content
 //   writeTicket(ticket, raw, opts) -> { lastModified }      (throws ConflictError)
 //   moveTicket(ticket, columnId)   -> { lastModified }
@@ -868,16 +869,16 @@ const __mod_lib_store = (() => {
 //   deleteTicket(ticket)
 //   watch(onChange)                -> { mode, stop }
 //
-// - FsBackend: a local folder opened with the File System Access API
-//   (showDirectoryPicker). Read-write, watches the folder for outside changes.
-// - HttpBackend: the manifest.json produced by build.py, served over HTTP.
-//   Read-only; used for the GitHub Pages deploy.
-//
-// Data model: <projects root>/<project>/<column>/<TICKET-ID>.md, with an
-// optional <project>/project.md that sets the display name and column order.
+// Data model: <projects root>/<project>/<column>/<TICKET-ID>.md. Every project
+// folder needs a <project>/cloinear.md: it marks the folder as a Cloinear
+// project, pins the format version, sets the display name and column order, and
+// holds a ticket template for people and agents. Folders without it are refused.
 
 const { parseFrontmatter } = __mod_lib_frontmatter;
 const DEFAULT_COLUMNS = ["todo", "in-progress", "in-qa", "done"];
+// Version of the cloinear.md format this build understands.
+const FORMAT_VERSION = 1;
+const MARKER_FILE = "cloinear.md";
 
 const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
 const SIZES = ["S", "M", "L"];
@@ -943,23 +944,30 @@ function nextTicketId(project) {
   return `${prefix}-${max + 1}`;
 }
 
-function projectFromParts(id, projectMd, dirNames) {
-  let name = titleize(id);
-  let columns = [...DEFAULT_COLUMNS];
-  if (projectMd) {
-    const { data } = parseFrontmatter(projectMd);
-    if (typeof data.name === "string" && data.name) name = data.name;
-    if (Array.isArray(data.columns) && data.columns.length) columns = data.columns.filter(Boolean);
+// Build a project from its cloinear.md and column folder names. Returns
+// { error } when the folder must be refused.
+function projectFromParts(id, cloinearMd, dirNames) {
+  if (cloinearMd == null) return { error: `no ${MARKER_FILE}` };
+  const { data } = parseFrontmatter(cloinearMd);
+  const version = Number(data.version);
+  if (!Number.isInteger(version) || version < 1) {
+    return { error: `${MARKER_FILE} has no valid "version"` };
   }
-  // Include every column folder that exists on disk, even if project.md omits it.
+  if (version > FORMAT_VERSION) {
+    return { error: `${MARKER_FILE} is version ${version}; this board supports up to ${FORMAT_VERSION}` };
+  }
+  const name = typeof data.name === "string" && data.name ? data.name : titleize(id);
+  const columns =
+    Array.isArray(data.columns) && data.columns.length ? data.columns.filter(Boolean) : [...DEFAULT_COLUMNS];
+  // Include every column folder that exists on disk, even if cloinear.md omits it.
   for (const d of dirNames) if (!columns.includes(d)) columns.push(d);
-  return { id, name, columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })) };
+  return { id, name, version, columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })) };
 }
 
 // --------------------------------------------------------------------------- //
 // File System Access backend
 // --------------------------------------------------------------------------- //
-const fsSupported = typeof window.showDirectoryPicker === "function";
+const fsSupported = typeof window !== "undefined" && typeof window.showDirectoryPicker === "function";
 
 async function listEntries(dir) {
   const entries = [];
@@ -970,6 +978,8 @@ async function listEntries(dir) {
   return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+const hasMarker = (entries) => entries.some((e) => e.kind === "file" && e.name === MARKER_FILE);
+// Looks like a project but lacks cloinear.md: reported instead of silently skipped.
 const looksLikeProject = (entries) =>
   entries.some(
     (e) =>
@@ -978,7 +988,6 @@ const looksLikeProject = (entries) =>
   );
 
 class FsBackend {
-  readOnly = false;
 
   constructor(root) {
     this.root = root;
@@ -993,34 +1002,49 @@ class FsBackend {
     return (await this.root.queryPermission({ mode: "readwrite" })) === "granted";
   }
 
-  // Accepts: a single project folder, a folder containing projects/ or tickets/,
-  // or a folder whose subfolders are projects.
+  // Accepts: a single project folder, a folder containing projects/ or tickets/
+  // (either a project itself or a folder of projects), or a folder whose
+  // subfolders are projects. Only folders with a cloinear.md
+  // are projects; lookalikes without one come back in `rejected`.
   async resolveProjects() {
     const entries = await listEntries(this.root);
-    if (looksLikeProject(entries)) return [{ id: this.root.name, dir: this.root, entries }];
+    if (hasMarker(entries)) return { found: [{ id: this.root.name, dir: this.root, entries }], rejected: [] };
+    if (looksLikeProject(entries)) return { found: [], rejected: [{ id: this.root.name, reason: `no ${MARKER_FILE}` }] };
 
     const container = entries.find((e) => e.kind === "directory" && CONTAINER_DIRS.includes(e.name));
     const baseEntries = container ? await listEntries(container.handle) : entries;
+    // tickets/ (or projects/) can itself be the project: tickets/cloinear.md, tickets/todo/…
+    if (container && hasMarker(baseEntries)) {
+      return { found: [{ id: container.name, dir: container.handle, entries: baseEntries }], rejected: [] };
+    }
     const found = [];
+    const rejected = [];
     for (const e of baseEntries) {
       if (e.kind !== "directory" || SKIP_DIRS.has(e.name)) continue;
       const sub = await listEntries(e.handle);
-      if (container || looksLikeProject(sub)) found.push({ id: e.name, dir: e.handle, entries: sub });
+      if (hasMarker(sub)) found.push({ id: e.name, dir: e.handle, entries: sub });
+      else if (container || looksLikeProject(sub)) rejected.push({ id: e.name, reason: `no ${MARKER_FILE}` });
     }
-    return found;
+    return { found, rejected };
   }
 
   async scan() {
-    const found = await this.resolveProjects();
-    const projects = await Promise.all(found.map((p) => this.scanProject(p)));
-    return { projects };
+    const { found, rejected } = await this.resolveProjects();
+    const scanned = await Promise.all(found.map((p) => this.scanProject(p)));
+    const projects = [];
+    for (const p of scanned) {
+      if (p.error) rejected.push({ id: p.id, reason: p.error });
+      else projects.push(p);
+    }
+    return { projects, rejected };
   }
 
   async scanProject({ id, dir, entries }) {
-    const projectMdEntry = entries.find((e) => e.kind === "file" && e.name === "project.md");
-    const projectMd = projectMdEntry ? await (await projectMdEntry.handle.getFile()).text() : null;
+    const markerEntry = entries.find((e) => e.kind === "file" && e.name === MARKER_FILE);
+    const cloinearMd = await (await markerEntry.handle.getFile()).text();
     const dirs = entries.filter((e) => e.kind === "directory");
-    const project = projectFromParts(id, projectMd, dirs.map((d) => d.name));
+    const project = projectFromParts(id, cloinearMd, dirs.map((d) => d.name));
+    if (project.error) return { id, error: project.error };
     project.dir = dir;
 
     await Promise.all(
@@ -1159,52 +1183,6 @@ async function fileExists(dir, name) {
 }
 
 // --------------------------------------------------------------------------- //
-// Read-only HTTP backend (manifest.json from build.py)
-// --------------------------------------------------------------------------- //
-class HttpBackend {
-  readOnly = true;
-  name = "manifest.json";
-
-  constructor(baseUrl) {
-    this.baseUrl = baseUrl; // URL of the repo root, which holds manifest.json
-  }
-
-  async scan() {
-    const res = await fetch(new URL("manifest.json", this.baseUrl), { cache: "no-cache" });
-    if (!res.ok) throw new Error(`manifest.json: HTTP ${res.status}`);
-    const manifest = await res.json();
-    const projects = await Promise.all(
-      (manifest.projects || []).map(async (p) => {
-        const project = projectFromParts(p.id, null, []);
-        project.name = p.name;
-        project.columns = await Promise.all(
-          (p.columnOrder || Object.keys(p.columns)).map(async (colId) => ({
-            id: colId,
-            label: (p.columnLabels && p.columnLabels[colId]) || titleize(colId),
-            tickets: sortTickets(
-              await Promise.all(
-                (p.columns[colId] || []).map(async (t) => {
-                  const raw = await fetch(new URL(t.path, this.baseUrl), { cache: "no-cache" })
-                    .then((r) => (r.ok ? r.text() : ""))
-                    .catch(() => "");
-                  return { ...ticketFromText(t.id, raw), path: t.path, projectId: p.id, column: colId };
-                })
-              )
-            ),
-          }))
-        );
-        return project;
-      })
-    );
-    return { projects };
-  }
-
-  async watch() {
-    return { mode: "read-only", stop() {} };
-  }
-}
-
-// --------------------------------------------------------------------------- //
 // Remember the opened folder per page URL (IndexedDB can store handles).
 // --------------------------------------------------------------------------- //
 const DB_NAME = "cloinear";
@@ -1228,14 +1206,14 @@ const saveHandle = (handle) => withStore("readwrite", (s) => s.put(handle, handl
 const loadHandle = () => withStore("readonly", (s) => s.get(handleKey())).catch(() => null);
 const forgetHandle = () => withStore("readwrite", (s) => s.delete(handleKey()));
 
-return { DEFAULT_COLUMNS, SIZES, ConflictError, titleize, ticketFromText, nextTicketId, fsSupported, FsBackend, HttpBackend, saveHandle, loadHandle, forgetHandle };
+return { DEFAULT_COLUMNS, FORMAT_VERSION, MARKER_FILE, SIZES, ConflictError, titleize, ticketFromText, nextTicketId, projectFromParts, fsSupported, FsBackend, saveHandle, loadHandle, forgetHandle };
 })();
 
 // ---- app/app.js ----
 {
 const { renderMarkdown, updateTicketText } = __mod_lib_frontmatter;
 const { scoreTicket } = __mod_lib_search;
-const { ConflictError, FsBackend, HttpBackend, SIZES, fsSupported, loadHandle, nextTicketId, saveHandle, ticketFromText } = __mod_lib_store;
+const { ConflictError, FsBackend, SIZES, fsSupported, loadHandle, nextTicketId, saveHandle, ticketFromText } = __mod_lib_store;
 const PRIORITIES = {
   urgent: { label: "Urgent", cls: "prio-urgent" },
   high: { label: "High", cls: "prio-high" },
@@ -1318,12 +1296,6 @@ async function boot() {
     if (await backend.hasPermission().catch(() => false)) return connect(backend);
     return renderStart({ stored });
   }
-  if (location.protocol.startsWith("http")) {
-    // Hosted next to build.py's manifest.json (e.g. GitHub Pages): read-only view.
-    const http = new HttpBackend(new URL("../", location.href));
-    const board = await http.scan().catch(() => null);
-    if (board && board.projects.length) return connect(http, board);
-  }
   renderStart({});
 }
 
@@ -1345,12 +1317,11 @@ async function reconnect(handle) {
   else toast("Permission to the folder was not granted.", "error");
 }
 
-async function connect(backend, board) {
+async function connect(backend) {
   if (state.watcher) state.watcher.stop();
   closeDrawer();
   Object.assign(state, { backend, watcher: null, board: null, signature: "" });
-  if (board) applyBoard(board);
-  else await refresh();
+  await refresh();
   if (state.backend !== backend || !state.board) return;
   state.watcher = await backend.watch(refresh);
   renderTopbar();
@@ -1394,16 +1365,22 @@ function refresh() {
 }
 
 function applyBoard(board) {
-  const signature = JSON.stringify(
+  const signature = JSON.stringify([
+    board.rejected,
     board.projects.map((p) => [
       p.id,
       p.name,
       p.columns.map((c) => [c.id, c.tickets.map((t) => [t.id, t.lastModified, t.bytes, t.size, t.raw.length])]),
-    ])
-  );
+    ]),
+  ]);
   if (signature === state.signature) return;
   state.signature = signature;
+  const before = new Set(state.board ? state.board.rejected.map((r) => r.id) : []);
   state.board = board;
+  const newlyRejected = board.rejected.filter((r) => !before.has(r.id));
+  if (board.projects.length && newlyRejected.length) {
+    toast(`Skipped ${newlyRejected.map((r) => `${r.id} (${r.reason})`).join(", ")}.`, "error");
+  }
 
   renderProjectSelect();
   if (!board.projects.length) {
@@ -1454,7 +1431,7 @@ function renderTopbar() {
   const backend = state.backend;
   const hasBoard = !!(backend && state.board && state.board.projects.length);
   els.select.hidden = !hasBoard;
-  els.newTicket.hidden = !hasBoard || backend.readOnly;
+  els.newTicket.hidden = !hasBoard;
   els.count.hidden = !hasBoard;
   els.searchBox.hidden = !hasBoard;
 
@@ -1464,14 +1441,9 @@ function renderTopbar() {
   } else {
     els.sync.hidden = false;
     els.sync.className = `sync-status sync-${mode}`;
-    els.sync.textContent =
-      mode === "live" ? backend.name : mode === "polling" ? backend.name : "Read-only";
+    els.sync.textContent = backend.name;
     els.sync.title =
-      mode === "live"
-        ? "Watching the folder for changes"
-        : mode === "polling"
-          ? "Checking the folder for changes every 1.5s"
-          : "Served from manifest.json. Open a local folder to edit.";
+      mode === "live" ? "Watching the folder for changes" : "Checking the folder for changes every 1.5s";
   }
 }
 
@@ -1494,11 +1466,19 @@ function renderStart({ stored = null, reason = "", empty = false }) {
       <p>Cloinear reads and writes your ticket folder with the File System Access API,
       which only Chromium-based browsers support.</p>`;
   } else if (empty) {
+    const rejected = state.board ? state.board.rejected : [];
     body = `
-      <h2>No projects in “${escapeHtml(state.backend.name)}”</h2>
-      <p>Pick a folder laid out like <code>&lt;project&gt;/todo/TICKET-1.md</code>,
-      a folder containing <code>projects/</code>, or a single project folder with
-      <code>todo/</code>, <code>done/</code>… subfolders.</p>
+      <h2>No Cloinear project in “${escapeHtml(state.backend.name)}”</h2>
+      <p>Each project folder needs a <code>cloinear.md</code> next to its <code>todo/</code>,
+      <code>done/</code>… subfolders. Pick a project folder, a folder of projects, or a
+      folder containing <code>tickets/</code> or <code>projects/</code>.</p>
+      ${
+        rejected.length
+          ? `<ul class="start-rejected">${rejected
+              .map((r) => `<li><strong>${escapeHtml(r.id)}</strong>: ${escapeHtml(r.reason)}</li>`)
+              .join("")}</ul>`
+          : ""
+      }
       <div class="start-actions"><button class="btn btn-primary" data-action="pick">Choose another folder</button></div>`;
   } else if (stored) {
     body = `
@@ -1511,8 +1491,8 @@ function renderStart({ stored = null, reason = "", empty = false }) {
   } else {
     body = `
       <h2>Open a ticket folder</h2>
-      <p>Pick the folder that holds your tickets: the one containing <code>projects/</code>,
-      or a project folder with <code>todo/</code>, <code>in-progress/</code>, <code>done/</code>…
+      <p>Pick the folder that holds your tickets: the one containing <code>tickets/</code>,
+      or a project folder with a <code>cloinear.md</code> and <code>todo/</code>, <code>done/</code>…
       Changes you make here are written straight to the <code>.md</code> files, and changes made
       on disk show up here live.</p>
       <div class="start-actions"><button class="btn btn-primary" data-action="pick">Open folder</button></div>`;
@@ -1532,7 +1512,6 @@ function renderBoard() {
   state.renderPending = false;
   const project = currentProject();
   if (!project) return;
-  const readOnly = state.backend.readOnly;
   const query = state.query.trim();
   let total = 0;
   let shown = 0;
@@ -1556,7 +1535,7 @@ function renderBoard() {
       <div class="column-header">
         <span class="column-title">${escapeHtml(col.label)}</span>
         <span class="column-count">${tickets.length}</span>
-        ${readOnly ? "" : `<button class="column-add" title="New ticket in ${escapeAttr(col.label)}" aria-label="New ticket in ${escapeAttr(col.label)}">+</button>`}
+        <button class="column-add" title="New ticket in ${escapeAttr(col.label)}" aria-label="New ticket in ${escapeAttr(col.label)}">+</button>
       </div>
       <div class="column-cards"></div>
     `;
@@ -1564,12 +1543,10 @@ function renderBoard() {
     if (tickets.length === 0) {
       cardsEl.innerHTML = `<div class="column-empty">${query ? "No matches" : "No tickets"}</div>`;
     } else {
-      for (const ticket of tickets) cardsEl.appendChild(renderCard(ticket, readOnly));
+      for (const ticket of tickets) cardsEl.appendChild(renderCard(ticket));
     }
-    if (!readOnly) {
-      column.querySelector(".column-add").addEventListener("click", () => openCreate(project.id, col.id));
-      bindDropTarget(column, project.id, col.id);
-    }
+    column.querySelector(".column-add").addEventListener("click", () => openCreate(project.id, col.id));
+    bindDropTarget(column, project.id, col.id);
     els.board.appendChild(column);
   }
   els.count.hidden = false;
@@ -1578,7 +1555,7 @@ function renderBoard() {
     : `${total} ticket${total === 1 ? "" : "s"}`;
 }
 
-function renderCard(ticket, readOnly) {
+function renderCard(ticket) {
   const prio = PRIORITIES[ticket.priority];
   const card = document.createElement("article");
   card.className = "card";
@@ -1612,21 +1589,19 @@ function renderCard(ticket, readOnly) {
     }
   });
 
-  if (!readOnly) {
-    card.draggable = true;
-    card.addEventListener("dragstart", (e) => {
-      state.dragging = { projectId: ticket.projectId, ticketId: ticket.id };
-      e.dataTransfer.effectAllowed = "move";
-      e.dataTransfer.setData("text/plain", ticket.id);
-      requestAnimationFrame(() => card.classList.add("dragging"));
-    });
-    card.addEventListener("dragend", () => {
-      card.classList.remove("dragging");
-      state.dragging = null;
-      document.querySelectorAll(".drop-target").forEach((el) => el.classList.remove("drop-target"));
-      if (state.renderPending) renderBoard();
-    });
-  }
+  card.draggable = true;
+  card.addEventListener("dragstart", (e) => {
+    state.dragging = { projectId: ticket.projectId, ticketId: ticket.id };
+    e.dataTransfer.effectAllowed = "move";
+    e.dataTransfer.setData("text/plain", ticket.id);
+    requestAnimationFrame(() => card.classList.add("dragging"));
+  });
+  card.addEventListener("dragend", () => {
+    card.classList.remove("dragging");
+    state.dragging = null;
+    document.querySelectorAll(".drop-target").forEach((el) => el.classList.remove("drop-target"));
+    if (state.renderPending) renderBoard();
+  });
   return card;
 }
 
@@ -1683,7 +1658,6 @@ function openTicket(projectId, ticketId) {
   const ticket = findTicket(projectId, ticketId);
   if (!ticket) return;
   if (state.drawer) closeDrawer();
-  const readOnly = state.backend.readOnly;
   state.drawer = {
     mode: "edit",
     projectId,
@@ -1695,19 +1669,19 @@ function openTicket(projectId, ticketId) {
     saveTimer: null,
     conflict: false,
     deleted: false,
-    bodyMode: readOnly || ticket.body.trim() ? "preview" : "write",
+    bodyMode: ticket.body.trim() ? "preview" : "write",
   };
-  buildDrawer({ readOnly });
+  buildDrawer();
   fillDrawer(ticket);
   showDrawer();
 }
 
 function openCreate(projectId, columnId) {
   const project = state.board.projects.find((p) => p.id === projectId);
-  if (!project || state.backend.readOnly) return;
+  if (!project) return;
   if (state.drawer) closeDrawer();
   state.drawer = { mode: "create", projectId, column: columnId || project.columns[0].id, bodyMode: "write" };
-  buildDrawer({ readOnly: false });
+  buildDrawer();
   fillDrawer({
     id: nextTicketId(project),
     title: "",
@@ -1723,10 +1697,9 @@ function openCreate(projectId, columnId) {
   document.getElementById("f-title").focus();
 }
 
-function buildDrawer({ readOnly }) {
+function buildDrawer() {
   const d = state.drawer;
   const project = state.board.projects.find((p) => p.id === d.projectId);
-  const dis = readOnly ? "disabled" : "";
   const columnOptions = project.columns
     .map((c) => `<option value="${escapeAttr(c.id)}">${escapeHtml(c.label)}</option>`)
     .join("");
@@ -1741,16 +1714,16 @@ function buildDrawer({ readOnly }) {
       <span class="dt-save" id="dt-save"></span>
     </div>
     <div class="dt-banner" id="dt-banner" hidden></div>
-    <textarea class="dt-title" id="f-title" rows="1" placeholder="Ticket title" ${dis}></textarea>
+    <textarea class="dt-title" id="f-title" rows="1" placeholder="Ticket title"></textarea>
     <div class="dt-meta">
-      <label><span>Status</span><select id="f-column" ${dis}>${columnOptions}</select></label>
-      <label><span>Priority</span><select id="f-priority" ${dis}>${prioOptions}</select></label>
-      <label><span>Size</span><select id="f-size" ${dis}>${sizeOptions}</select></label>
-      <label id="f-assignee-row"><span>Assignee</span><input id="f-assignee" placeholder="—" ${dis} /></label>
-      <label><span>Labels</span><input id="f-labels" placeholder="bug, auth" ${dis} /></label>
+      <label><span>Status</span><select id="f-column">${columnOptions}</select></label>
+      <label><span>Priority</span><select id="f-priority">${prioOptions}</select></label>
+      <label><span>Size</span><select id="f-size">${sizeOptions}</select></label>
+      <label id="f-assignee-row"><span>Assignee</span><input id="f-assignee" placeholder="—" /></label>
+      <label><span>Labels</span><input id="f-labels" placeholder="bug, auth" /></label>
       <label id="f-created-row"><span>Created</span><span id="f-created" class="dt-static"></span></label>
     </div>
-    <div class="dt-tabs" ${readOnly ? "hidden" : ""}>
+    <div class="dt-tabs">
       <button type="button" data-mode="write">Write</button>
       <button type="button" data-mode="preview">Preview</button>
     </div>
@@ -1763,9 +1736,7 @@ function buildDrawer({ readOnly }) {
           d.mode === "create"
             ? `<button type="button" class="btn" data-action="cancel">Cancel</button>
                <button type="button" class="btn btn-primary" data-action="create">Create ticket</button>`
-            : readOnly
-              ? ""
-              : `<button type="button" class="btn btn-danger" data-action="delete">Delete</button>`
+            : `<button type="button" class="btn btn-danger" data-action="delete">Delete</button>`
         }
       </span>
     </div>
@@ -1789,7 +1760,7 @@ function buildDrawer({ readOnly }) {
   });
   $("f-body").addEventListener("input", () => autoGrow($("f-body")));
   $("f-preview").addEventListener("click", (e) => {
-    if (!readOnly && !e.target.closest("a")) setBodyMode("write", { focus: true });
+    if (!e.target.closest("a")) setBodyMode("write", { focus: true });
   });
   els.drawerContent.querySelectorAll(".dt-tabs button").forEach((b) =>
     b.addEventListener("click", () => setBodyMode(b.dataset.mode, { focus: b.dataset.mode === "write" }))
@@ -1833,8 +1804,6 @@ function fillDrawer(t) {
   $("f-body").value = t.body;
   if (d.mode === "create") {
     $("f-path").textContent = `${d.projectId}/${t.column}/${t.id}.md`;
-  } else if (state.backend instanceof HttpBackend) {
-    $("f-path").innerHTML = `<a href="${escapeAttr(new URL(t.path, state.backend.baseUrl))}" target="_blank" rel="noopener">${escapeHtml(t.path)}</a>`;
   } else {
     $("f-path").textContent = t.path;
   }
@@ -2098,7 +2067,7 @@ function onGlobalKey(e) {
   } else if (
     e.key === "c" && !d && !e.metaKey && !e.ctrlKey && !e.altKey &&
     !e.target.closest("input, textarea, select") &&
-    state.backend && !state.backend.readOnly && currentProject()
+    state.backend && currentProject()
   ) {
     e.preventDefault();
     openCreate(state.projectId);
