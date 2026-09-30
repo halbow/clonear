@@ -14,9 +14,18 @@ default:
 build:
     python3 build.py
 
-# Fail if manifest.json is missing or stale (used by CI).
+# Fail if manifest.json or dist/cloinear.html is missing or stale (used by CI).
 check:
     python3 build.py --check
+    python3 bundle.py --check
+
+# Bundle app/ into the single-file board: dist/cloinear.html
+bundle:
+    python3 bundle.py
+
+# Run the unit tests.
+test:
+    node --test tests/*.test.mjs
 
 # Build the manifest and serve the site at http://localhost:{{port}}
 serve: build
@@ -50,9 +59,9 @@ list project="":
 # --- ticket lifecycle ----------------------------------------------------- #
 
 # Create a ticket. ID is auto-generated (e.g. WEB-6).
-# Usage: just new web-app todo "Fix the thing" [priority] [assignee] [labels]
-#   priority: urgent|high|medium|low|none   labels: comma-separated, e.g. bug,auth
-new project column title priority="none" assignee="" labels="":
+# Usage: just new web-app todo "Fix the thing" [priority] [assignee] [labels] [size]
+#   priority: urgent|high|medium|low|none   labels: comma-separated, e.g. bug,auth   size: S|M|L
+new project column title priority="none" assignee="" labels="" size="":
     #!/usr/bin/env bash
     set -euo pipefail
     proj="{{projects_dir}}/{{project}}"
@@ -83,6 +92,7 @@ new project column title priority="none" assignee="" labels="":
     title: {{title}}
     assignee: {{assignee}}
     priority: {{priority}}
+    size: {{size}}
     labels: $labels_fmt
     created: $(date +%F)
     ---

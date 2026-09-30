@@ -2,12 +2,30 @@
 <html lang="en">
   <head>
     <meta charset="UTF-8" />
+    <!--
+      Network lockdown, enforced by the browser: nothing may be loaded from or
+      sent to another origin. connect-src 'self' only allows the read-only
+      manifest.json mode to fetch from the site that served this page.
+      bundle.py swaps 'unsafe-inline' in script-src for the hashes of the
+      inlined scripts, so only the bundled code can run.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'self'; form-action 'none'; base-uri 'none'"
+    />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cloinear</title>
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%97%90%3C/text%3E%3C/svg%3E"
     />
+    <script>
+      // Chrome blocks module scripts on file://, so this dev page can't run
+      // there; hand over to the single-file build. (No-op inside the bundle.)
+      if (location.protocol === "file:" && /\/app\/(index\.html)?$/.test(location.pathname)) {
+        location.replace("../dist/cloinear.html" + location.hash);
+      }
+    </script>
     <link rel="stylesheet" href="styles.css" />
   </head>
   <body>
@@ -18,10 +36,17 @@
       </div>
       <label class="project-picker">
         <span class="sr-only">Project</span>
-        <select id="project-select" aria-label="Select project"></select>
+        <select id="project-select" aria-label="Select project" hidden></select>
+      </label>
+      <button id="new-ticket" class="btn btn-primary" title="New ticket (C)" hidden>+ New ticket</button>
+      <label class="search" hidden id="search-box">
+        <span class="sr-only">Search tickets</span>
+        <input id="search" type="search" placeholder="Search tickets…  /" autocomplete="off" spellcheck="false" />
       </label>
       <div class="topbar-spacer"></div>
-      <span id="ticket-count" class="ticket-count"></span>
+      <span id="sync-status" class="sync-status" hidden></span>
+      <span id="ticket-count" class="ticket-count" hidden></span>
+      <button id="open-folder" class="btn" title="Open another ticket folder">Open folder</button>
     </header>
 
     <main id="board" class="board" aria-live="polite"></main>
@@ -32,6 +57,8 @@
       <button id="drawer-close" class="drawer-close" aria-label="Close">✕</button>
       <div id="drawer-content" class="drawer-content"></div>
     </aside>
+
+    <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <script type="module" src="app.js"></script>
   </body>

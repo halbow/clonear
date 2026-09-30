@@ -28,14 +28,18 @@ jobs:
       - name: Build manifest.json from the folder tree
         run: python3 build.py
 
+      - name: Check dist/cloinear.html is up to date with app/
+        run: python3 bundle.py --check
+
       - name: Configure Pages
         uses: actions/configure-pages@v5
 
       - name: Upload site artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          # Upload the whole repo: the UI (app/), the data (projects/),
-          # the entry redirect (index.html) and the freshly built manifest.json.
+          # Upload the whole repo: the UI (app/), the single-file board
+          # (dist/cloinear.html), the data (projects/), the entry redirect
+          # (index.html) and the freshly built manifest.json.
           path: .
 
       - name: Deploy to GitHub Pages
