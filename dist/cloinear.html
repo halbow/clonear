@@ -11,7 +11,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-HrdQdGdVsN17AVqdQATDtsZSnYqoD8Adv4k6kSCr5YU=' 'sha256-szPIeUZnsa5xFHC+xpVlGag+wYhPLCMrVrVHtMMiWA8='; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+      content="default-src 'none'; script-src 'sha256-HrdQdGdVsN17AVqdQATDtsZSnYqoD8Adv4k6kSCr5YU=' 'sha256-K5FA8PN1X/KCUwB7z7veRE7iVUhVNTcnjW/TlN3j2Pg='; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Cloinear</title>
@@ -42,7 +42,6 @@
   --prio-high: #f2994a;
   --prio-medium: #e2b93b;
   --prio-low: #7d8590;
-  --prio-none: #c3c6cf;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -56,7 +55,6 @@
     --accent: #7c8aff;
     --shadow: none;
     --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.55);
-    --prio-none: #3a3d47;
   }
 }
 
@@ -254,7 +252,6 @@ body {
 .prio-high { background: var(--prio-high); }
 .prio-medium { background: var(--prio-medium); }
 .prio-low { background: var(--prio-low); }
-.prio-none { background: var(--prio-none); }
 
 /* ---- drawer ---- */
 .drawer-overlay {
@@ -384,6 +381,21 @@ body {
 }
 .start-actions { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
 .start-rejected { display: inline-block; text-align: left; color: var(--text-dim); margin: 8px 0 0; padding-left: 20px; }
+
+.start-rejected li { margin: 4px 0; }
+.start-rejected .btn { margin-left: 8px; padding: 1px 10px; }
+
+/* ---- notices: projects that were skipped or need attention ---- */
+.notices {
+  flex: 0 0 auto;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.notice { display: flex; align-items: center; gap: 10px; margin: 2px 0; }
+.notice-warn::before { content: "⚠"; color: var(--prio-high); }
+.notice .btn { padding: 1px 10px; }
 
 /* ---- column add & drag and drop ---- */
 .column-add {
@@ -544,8 +556,11 @@ textarea.dt-title:focus,
       <div class="topbar-spacer"></div>
       <span id="sync-status" class="sync-status" hidden></span>
       <span id="ticket-count" class="ticket-count" hidden></span>
-      <button id="open-folder" class="btn" title="Open another ticket folder">Open folder</button>
+      <button id="open-folder" class="btn" title="Open a folder with a cloinear.md">Open</button>
+      <button id="create-project" class="btn" title="Pick a folder and make it a Cloinear project">Create</button>
     </header>
+
+    <div id="notices" class="notices" hidden></div>
 
     <main id="board" class="board" aria-live="polite"></main>
 
@@ -791,6 +806,127 @@ function renderMarkdown(md) {
 return { parseFrontmatter, stripFrontmatter, updateTicketText, renderMarkdown };
 })();
 
+// ---- app/lib/format.js ----
+const __mod_lib_format = (() => {
+// The cloinear.md format: its semver version, the file `init` writes, and the
+// migrations that bring an older project up to date.
+//
+// Versioning rules (the file's version vs. FORMAT_VERSION):
+// - same major, same or older minor/patch: read normally
+// - same major, newer minor/patch: additions only, so read it; unknown fields
+//   are ignored (and kept on save)
+// - newer major: breaking change, refused with a warning
+// - older major: refused until migrated
+//
+// A breaking change bumps the major and adds an entry to MIGRATIONS that
+// rewrites cloinear.md and every ticket from the previous major.
+
+const { parseFrontmatter, updateTicketText } = __mod_lib_frontmatter;
+const FORMAT_VERSION = "1.0.0";
+const DEFAULT_COLUMNS = ["todo", "in-progress", "in-qa", "done"];
+
+// { to: "2.0.0", project(md) -> md, ticket(raw) -> raw }, oldest first.
+// `project` and `ticket` are optional; version bumps are done by migrate().
+const MIGRATIONS = [];
+
+// "1.2.3" -> { major, minor, patch }. "1" and "1.2" are read as "1.0.0" and
+// "1.2.0" (early cloinear.md files used a plain integer). null when invalid.
+function parseVersion(value) {
+  const m = String(value ?? "").trim().match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/);
+  if (!m || Number(m[1]) < 1) return null;
+  return { major: Number(m[1]), minor: Number(m[2] || 0), patch: Number(m[3] || 0) };
+}
+
+function compareVersions(a, b) {
+  return a.major - b.major || a.minor - b.minor || a.patch - b.patch;
+}
+
+const format = (v) => `${v.major}.${v.minor}.${v.patch}`;
+
+// How this board should treat a cloinear.md with `value` as its version:
+// "ok" | "newer" (newer minor/patch, readable) | "too-new" | "outdated" | "invalid".
+function checkVersion(value, current = FORMAT_VERSION) {
+  const v = parseVersion(value);
+  const c = parseVersion(current);
+  if (!v) return "invalid";
+  if (v.major > c.major) return "too-new";
+  if (v.major < c.major) return "outdated";
+  return compareVersions(v, c) > 0 ? "newer" : "ok";
+}
+
+// Bring a project to `target`: runs every migration after the file's version,
+// then stamps the new version. `tickets` is [{ path, raw }]; returns the same
+// shape with only the tickets whose content changed.
+function migrate({ cloinearMd, tickets }, { migrations = MIGRATIONS, target = FORMAT_VERSION } = {}) {
+  const from = parseVersion(parseFrontmatter(cloinearMd).data.version);
+  const to = parseVersion(target);
+  if (!from) throw new Error('cloinear.md has no valid "version"');
+  if (compareVersions(from, to) > 0) throw new Error(`cannot migrate ${format(from)} down to ${format(to)}`);
+
+  const steps = migrations.filter((m) => {
+    const v = parseVersion(m.to);
+    return compareVersions(v, from) > 0 && compareVersions(v, to) <= 0;
+  });
+  for (let major = from.major + 1; major <= to.major; major++) {
+    if (!steps.some((m) => parseVersion(m.to).major === major)) {
+      throw new Error(`no migration to version ${major}.0.0`);
+    }
+  }
+
+  let md = cloinearMd;
+  let out = tickets.map((t) => ({ ...t }));
+  for (const step of steps) {
+    if (step.project) md = step.project(md);
+    if (step.ticket) out = out.map((t) => ({ ...t, raw: step.ticket(t.raw) }));
+  }
+  md = updateTicketText(md, { version: format(to) }, parseFrontmatter(md).body);
+  const changed = out.filter((t, i) => t.raw !== tickets[i].raw);
+  return { cloinearMd: md, tickets: changed };
+}
+
+// The cloinear.md `init` writes: current version, name, columns, and the
+// ticket template people and agents follow.
+function initCloinearMd({ name, prefix, columns = DEFAULT_COLUMNS }) {
+  return `---
+version: ${FORMAT_VERSION}
+name: ${name}
+columns: [${columns.join(", ")}]
+---
+
+This file marks the folder as a Cloinear project; the board refuses folders
+without it. \`version\` is the cloinear.md format version (semver), \`name\` is
+the display name, and \`columns\` is the column order (each column is a
+subfolder).
+
+## Tickets
+
+A ticket is \`<column>/<ID>.md\`, e.g. \`${columns[0]}/${prefix}-7.md\`. The filename stem is the
+id (\`${prefix}-<next number>\`); the folder it sits in is its status. To move a
+ticket, move the file to another column folder.
+
+## Template
+
+Every field filled in. Only \`title\` is required; unknown keys are kept.
+
+\`\`\`markdown
+---
+title: Fix login redirect loop   # required, one line
+assignee: dave                   # free text, optional
+priority: medium                 # urgent | high | medium | low (default: low)
+size: M                          # S | M | L (t-shirt estimate)
+labels: [bug, auth]              # list of free-text tags
+created: 2026-09-30              # YYYY-MM-DD
+---
+
+Markdown description: context, what to do, acceptance criteria.
+Supports headings, lists, code, links, **bold** and *italic*.
+\`\`\`
+`;
+}
+
+return { FORMAT_VERSION, DEFAULT_COLUMNS, MIGRATIONS, parseVersion, compareVersions, checkVersion, migrate, initCloinearMd };
+})();
+
 // ---- app/lib/search.js ----
 const __mod_lib_search = (() => {
 // Fuzzy ticket search for the top bar.
@@ -860,13 +996,16 @@ const __mod_lib_store = (() => {
 // (showDirectoryPicker). Read-write, watches the folder for outside changes.
 // FsBackend exposes this shape to the UI:
 //
-//   scan()                         -> { projects: [{ id, name, columns: [{ id, label, tickets }] }],
-//                                       rejected: [{ id, reason }] }
+//   scan()                         -> { projects: [{ id, name, version, newer, columns: [{ id, label, tickets }] }],
+//                                       rejected: [{ id, reason, action, dir }] }
+//                                     action: "migrate" | null
 //   readText(ticket)               -> the file's current content
 //   writeTicket(ticket, raw, opts) -> { lastModified }      (throws ConflictError)
 //   moveTicket(ticket, columnId)   -> { lastModified }
 //   createTicket(project, columnId, id, raw)
 //   deleteTicket(ticket)
+//   initProject()                  -> makes the root a project: cloinear.md + column folders
+//   migrateProject(dir)            -> rewrites cloinear.md and its tickets to FORMAT_VERSION
 //   watch(onChange)                -> { mode, stop }
 //
 // Data model: <projects root>/<project>/<column>/<TICKET-ID>.md. Every project
@@ -875,12 +1014,10 @@ const __mod_lib_store = (() => {
 // holds a ticket template for people and agents. Folders without it are refused.
 
 const { parseFrontmatter } = __mod_lib_frontmatter;
-const DEFAULT_COLUMNS = ["todo", "in-progress", "in-qa", "done"];
-// Version of the cloinear.md format this build understands.
-const FORMAT_VERSION = 1;
+const { DEFAULT_COLUMNS, FORMAT_VERSION, checkVersion, initCloinearMd, migrate } = __mod_lib_format;
 const MARKER_FILE = "cloinear.md";
 
-const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
+const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
 const SIZES = ["S", "M", "L"];
 const ACRONYMS = new Set(["qa", "ui", "ci", "api", "id", "ux"]);
 // Folders that can hold projects when the user picks a repo root.
@@ -917,7 +1054,7 @@ function ticketFromText(id, raw) {
     body,
     title: str(data.title) || id,
     assignee: str(data.assignee),
-    priority: priority in PRIORITY_ORDER ? priority : "none",
+    priority: priority in PRIORITY_ORDER ? priority : "low", // missing or unknown (e.g. old "none")
     size: SIZES.includes(size) ? size : "",
     labels: labels.filter(Boolean),
     created: str(data.created),
@@ -938,30 +1075,40 @@ function sortTickets(tickets) {
 function nextTicketId(project) {
   const ids = project.columns.flatMap((c) => c.tickets.map((t) => t.id));
   const parsed = ids.map((id) => id.match(/^([A-Za-z]+)-(\d+)$/)).filter(Boolean);
-  const prefix =
-    (parsed[0] && parsed[0][1]) || project.id.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3) || "TIX";
+  const prefix = (parsed[0] && parsed[0][1]) || defaultPrefix(project.id);
   const max = Math.max(0, ...parsed.filter((m) => m[1] === prefix).map((m) => Number(m[2])));
   return `${prefix}-${max + 1}`;
 }
 
+// Ticket id prefix for a project without tickets yet, e.g. web-app -> WEB.
+function defaultPrefix(projectId) {
+  return projectId.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3) || "TIX";
+}
+
 // Build a project from its cloinear.md and column folder names. Returns
-// { error } when the folder must be refused.
+// { error, action } when the folder must be refused; action says what fixes it.
 function projectFromParts(id, cloinearMd, dirNames) {
-  if (cloinearMd == null) return { error: `no ${MARKER_FILE}` };
+  if (cloinearMd == null) return { error: `no ${MARKER_FILE}`, action: null };
   const { data } = parseFrontmatter(cloinearMd);
-  const version = Number(data.version);
-  if (!Number.isInteger(version) || version < 1) {
-    return { error: `${MARKER_FILE} has no valid "version"` };
+  const version = String(data.version ?? "");
+  switch (checkVersion(version)) {
+    case "invalid":
+      return { error: `${MARKER_FILE} has no valid "version"`, action: null };
+    case "too-new":
+      return {
+        error: `${MARKER_FILE} is version ${version}, which needs a newer board (this one reads ${FORMAT_VERSION})`,
+        action: null,
+      };
+    case "outdated":
+      return { error: `${MARKER_FILE} is version ${version}; migrate it to ${FORMAT_VERSION}`, action: "migrate" };
   }
-  if (version > FORMAT_VERSION) {
-    return { error: `${MARKER_FILE} is version ${version}; this board supports up to ${FORMAT_VERSION}` };
-  }
+  const newer = checkVersion(version) === "newer";
   const name = typeof data.name === "string" && data.name ? data.name : titleize(id);
   const columns =
     Array.isArray(data.columns) && data.columns.length ? data.columns.filter(Boolean) : [...DEFAULT_COLUMNS];
   // Include every column folder that exists on disk, even if cloinear.md omits it.
   for (const d of dirNames) if (!columns.includes(d)) columns.push(d);
-  return { id, name, version, columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })) };
+  return { id, name, version, newer, columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })) };
 }
 
 // --------------------------------------------------------------------------- //
@@ -978,6 +1125,7 @@ async function listEntries(dir) {
   return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+const missingMarker = (id, dir) => ({ id, reason: `no ${MARKER_FILE}`, action: null, dir });
 const hasMarker = (entries) => entries.some((e) => e.kind === "file" && e.name === MARKER_FILE);
 // Looks like a project but lacks cloinear.md: reported instead of silently skipped.
 const looksLikeProject = (entries) =>
@@ -1009,7 +1157,7 @@ class FsBackend {
   async resolveProjects() {
     const entries = await listEntries(this.root);
     if (hasMarker(entries)) return { found: [{ id: this.root.name, dir: this.root, entries }], rejected: [] };
-    if (looksLikeProject(entries)) return { found: [], rejected: [{ id: this.root.name, reason: `no ${MARKER_FILE}` }] };
+    if (looksLikeProject(entries)) return { found: [], rejected: [missingMarker(this.root.name, this.root)] };
 
     const container = entries.find((e) => e.kind === "directory" && CONTAINER_DIRS.includes(e.name));
     const baseEntries = container ? await listEntries(container.handle) : entries;
@@ -1023,7 +1171,7 @@ class FsBackend {
       if (e.kind !== "directory" || SKIP_DIRS.has(e.name)) continue;
       const sub = await listEntries(e.handle);
       if (hasMarker(sub)) found.push({ id: e.name, dir: e.handle, entries: sub });
-      else if (container || looksLikeProject(sub)) rejected.push({ id: e.name, reason: `no ${MARKER_FILE}` });
+      else if (container || looksLikeProject(sub)) rejected.push(missingMarker(e.name, e.handle));
     }
     return { found, rejected };
   }
@@ -1033,7 +1181,7 @@ class FsBackend {
     const scanned = await Promise.all(found.map((p) => this.scanProject(p)));
     const projects = [];
     for (const p of scanned) {
-      if (p.error) rejected.push({ id: p.id, reason: p.error });
+      if (p.error) rejected.push({ id: p.id, reason: p.error, action: p.action, dir: p.dir });
       else projects.push(p);
     }
     return { projects, rejected };
@@ -1044,7 +1192,7 @@ class FsBackend {
     const cloinearMd = await (await markerEntry.handle.getFile()).text();
     const dirs = entries.filter((e) => e.kind === "directory");
     const project = projectFromParts(id, cloinearMd, dirs.map((d) => d.name));
-    if (project.error) return { id, error: project.error };
+    if (project.error) return { id, dir, error: project.error, action: project.action };
     project.dir = dir;
 
     await Promise.all(
@@ -1132,6 +1280,35 @@ class FsBackend {
     this.cache.delete(ticket.path);
   }
 
+  // Make the root folder a project: cloinear.md at the current format version,
+  // plus the default column folders.
+  async initProject() {
+    const root = this.root;
+    if (await fileExists(root, MARKER_FILE)) throw new Error(`${root.name}/${MARKER_FILE} already exists.`);
+    const md = initCloinearMd({ name: titleize(root.name), prefix: defaultPrefix(root.name) });
+    for (const col of DEFAULT_COLUMNS) await root.getDirectoryHandle(col, { create: true });
+    await writeFile(await root.getFileHandle(MARKER_FILE, { create: true }), md);
+  }
+
+  // Rewrite a project's cloinear.md and tickets to FORMAT_VERSION. cloinear.md
+  // is written last, so the version only moves once every ticket is migrated.
+  async migrateProject(dir) {
+    const markerHandle = await dir.getFileHandle(MARKER_FILE);
+    const cloinearMd = await (await markerHandle.getFile()).text();
+    const tickets = [];
+    for (const col of await listEntries(dir)) {
+      if (col.kind !== "directory") continue;
+      for (const f of await listEntries(col.handle)) {
+        if (f.kind !== "file" || !f.name.endsWith(".md")) continue;
+        tickets.push({ path: `${col.name}/${f.name}`, handle: f.handle, raw: await (await f.handle.getFile()).text() });
+      }
+    }
+    const out = migrate({ cloinearMd, tickets });
+    for (const t of out.tickets) await writeFile(t.handle, t.raw);
+    await writeFile(markerHandle, out.cloinearMd);
+    return { tickets: out.tickets.length };
+  }
+
   // Calls onChange() whenever something may have changed on disk. Uses
   // FileSystemObserver where available and polling as the fallback (and as a
   // slow safety net, since observers can drop events).
@@ -1206,12 +1383,13 @@ const saveHandle = (handle) => withStore("readwrite", (s) => s.put(handle, handl
 const loadHandle = () => withStore("readonly", (s) => s.get(handleKey())).catch(() => null);
 const forgetHandle = () => withStore("readwrite", (s) => s.delete(handleKey()));
 
-return { DEFAULT_COLUMNS, FORMAT_VERSION, MARKER_FILE, SIZES, ConflictError, titleize, ticketFromText, nextTicketId, projectFromParts, fsSupported, FsBackend, saveHandle, loadHandle, forgetHandle };
+return { MARKER_FILE, SIZES, ConflictError, titleize, ticketFromText, nextTicketId, defaultPrefix, projectFromParts, fsSupported, FsBackend, saveHandle, loadHandle, forgetHandle };
 })();
 
 // ---- app/app.js ----
 {
 const { renderMarkdown, updateTicketText } = __mod_lib_frontmatter;
+const { FORMAT_VERSION } = __mod_lib_format;
 const { scoreTicket } = __mod_lib_search;
 const { ConflictError, FsBackend, SIZES, fsSupported, loadHandle, nextTicketId, saveHandle, ticketFromText } = __mod_lib_store;
 const PRIORITIES = {
@@ -1219,7 +1397,6 @@ const PRIORITIES = {
   high: { label: "High", cls: "prio-high" },
   medium: { label: "Medium", cls: "prio-medium" },
   low: { label: "Low", cls: "prio-low" },
-  none: { label: "No priority", cls: "prio-none" },
 };
 
 const AUTOSAVE_MS = 600;
@@ -1246,7 +1423,9 @@ const els = {
   search: document.getElementById("search"),
   sync: document.getElementById("sync-status"),
   newTicket: document.getElementById("new-ticket"),
+  notices: document.getElementById("notices"),
   openFolder: document.getElementById("open-folder"),
+  createProject: document.getElementById("create-project"),
   drawer: document.getElementById("drawer"),
   drawerOverlay: document.getElementById("drawer-overlay"),
   drawerContent: document.getElementById("drawer-content"),
@@ -1263,6 +1442,7 @@ async function boot() {
   els.select.addEventListener("change", () => selectProject(els.select.value, { pushUrl: true }));
   els.newTicket.addEventListener("click", () => openCreate(state.projectId));
   els.openFolder.addEventListener("click", pickFolder);
+  els.createProject.addEventListener("click", createProject);
   els.search.addEventListener("input", () => {
     state.query = els.search.value;
     renderBoard();
@@ -1288,7 +1468,7 @@ async function boot() {
   window.addEventListener("beforeunload", (e) => {
     if (state.drawer && state.drawer.dirty) e.preventDefault();
   });
-  els.openFolder.hidden = !fsSupported;
+  els.openFolder.hidden = els.createProject.hidden = !fsSupported;
 
   const stored = fsSupported ? await loadHandle() : null;
   if (stored) {
@@ -1299,16 +1479,36 @@ async function boot() {
   renderStart({});
 }
 
-async function pickFolder() {
-  let handle;
+async function chooseDirectory() {
   try {
-    handle = await window.showDirectoryPicker({ id: "cloinear", mode: "readwrite" });
+    return await window.showDirectoryPicker({ id: "cloinear", mode: "readwrite" });
   } catch (err) {
     if (err.name !== "AbortError") toast(err.message, "error");
+    return null;
+  }
+}
+
+async function pickFolder() {
+  const handle = await chooseDirectory();
+  if (!handle) return;
+  await saveHandle(handle).catch(() => {});
+  connect(new FsBackend(handle));
+}
+
+// Pick a folder and make it a project (cloinear.md + column folders), then open it.
+async function createProject() {
+  const handle = await chooseDirectory();
+  if (!handle) return;
+  const backend = new FsBackend(handle);
+  try {
+    await backend.initProject();
+    toast(`Created ${handle.name}/cloinear.md (version ${FORMAT_VERSION}).`);
+  } catch (err) {
+    toast(`Could not create the project: ${err.message}`, "error");
     return;
   }
   await saveHandle(handle).catch(() => {});
-  connect(new FsBackend(handle));
+  connect(backend);
 }
 
 async function reconnect(handle) {
@@ -1332,6 +1532,7 @@ function disconnect(reason) {
   const stored = state.backend instanceof FsBackend ? state.backend.root : null;
   closeDrawer();
   Object.assign(state, { backend: null, watcher: null, board: null, signature: "" });
+  renderNotices();
   renderStart({ stored, reason });
 }
 
@@ -1370,19 +1571,16 @@ function applyBoard(board) {
     board.projects.map((p) => [
       p.id,
       p.name,
+      p.version,
       p.columns.map((c) => [c.id, c.tickets.map((t) => [t.id, t.lastModified, t.bytes, t.size, t.raw.length])]),
     ]),
   ]);
   if (signature === state.signature) return;
   state.signature = signature;
-  const before = new Set(state.board ? state.board.rejected.map((r) => r.id) : []);
   state.board = board;
-  const newlyRejected = board.rejected.filter((r) => !before.has(r.id));
-  if (board.projects.length && newlyRejected.length) {
-    toast(`Skipped ${newlyRejected.map((r) => `${r.id} (${r.reason})`).join(", ")}.`, "error");
-  }
 
   renderProjectSelect();
+  renderNotices();
   if (!board.projects.length) {
     renderStart({ empty: true });
     return;
@@ -1471,15 +1669,22 @@ function renderStart({ stored = null, reason = "", empty = false }) {
       <h2>No Cloinear project in “${escapeHtml(state.backend.name)}”</h2>
       <p>Each project folder needs a <code>cloinear.md</code> next to its <code>todo/</code>,
       <code>done/</code>… subfolders. Pick a project folder, a folder of projects, or a
-      folder containing <code>tickets/</code> or <code>projects/</code>.</p>
+      folder containing <code>tickets/</code> or <code>projects/</code>. To start a new
+      project, use <strong>Create</strong>.</p>
       ${
         rejected.length
           ? `<ul class="start-rejected">${rejected
-              .map((r) => `<li><strong>${escapeHtml(r.id)}</strong>: ${escapeHtml(r.reason)}</li>`)
+              .map(
+                (r, i) =>
+                  `<li><strong>${escapeHtml(r.id)}</strong>: ${escapeHtml(r.reason)}${rejectedAction(r, i)}</li>`
+              )
               .join("")}</ul>`
           : ""
       }
-      <div class="start-actions"><button class="btn btn-primary" data-action="pick">Choose another folder</button></div>`;
+      <div class="start-actions">
+        <button class="btn btn-primary" data-action="pick">Choose another folder</button>
+        <button class="btn" data-action="create">Create a project</button>
+      </div>`;
   } else if (stored) {
     body = `
       <h2>${reason ? escapeHtml(reason) : "Welcome back"}</h2>
@@ -1495,13 +1700,65 @@ function renderStart({ stored = null, reason = "", empty = false }) {
       or a project folder with a <code>cloinear.md</code> and <code>todo/</code>, <code>done/</code>…
       Changes you make here are written straight to the <code>.md</code> files, and changes made
       on disk show up here live.</p>
-      <div class="start-actions"><button class="btn btn-primary" data-action="pick">Open folder</button></div>`;
+      <div class="start-actions">
+        <button class="btn btn-primary" data-action="pick">Open folder</button>
+        <button class="btn" data-action="create" title="Pick a folder and make it a Cloinear project">Create a project</button>
+      </div>`;
   }
   els.board.innerHTML = `<div class="start-panel">${body}</div>`;
   const pick = els.board.querySelector('[data-action="pick"]');
   if (pick) pick.addEventListener("click", pickFolder);
   const again = els.board.querySelector('[data-action="reconnect"]');
   if (again) again.addEventListener("click", () => reconnect(stored));
+  const create = els.board.querySelector('[data-action="create"]');
+  if (create) create.addEventListener("click", createProject);
+  bindRejectedActions(els.board);
+}
+
+// Skipped projects and projects written by a newer board, shown above the board.
+function renderNotices() {
+  const board = state.board;
+  const items = [];
+  if (board && board.projects.length) {
+    board.rejected.forEach((r, i) =>
+      items.push(
+        `<div class="notice notice-warn">Skipped <strong>${escapeHtml(r.id)}</strong>: ${escapeHtml(r.reason)}${rejectedAction(r, i)}</div>`
+      )
+    );
+    for (const p of board.projects.filter((p) => p.newer)) {
+      items.push(
+        `<div class="notice notice-warn"><strong>${escapeHtml(p.name)}</strong> uses cloinear.md ${escapeHtml(p.version)},
+        newer than this board (${FORMAT_VERSION}). Fields it doesn't know are ignored and kept.</div>`
+      );
+    }
+  }
+  els.notices.hidden = !items.length;
+  els.notices.innerHTML = items.join("");
+  bindRejectedActions(els.notices);
+}
+
+function rejectedAction(r, i) {
+  return r.action === "migrate" && r.dir
+    ? ` <button class="btn" data-rejected="${i}">Migrate to ${FORMAT_VERSION}</button>`
+    : "";
+}
+
+function bindRejectedActions(root) {
+  for (const btn of root.querySelectorAll("[data-rejected]")) {
+    const r = state.board.rejected[Number(btn.dataset.rejected)];
+    btn.addEventListener("click", () => migrateProject(r));
+  }
+}
+
+async function migrateProject(r) {
+  try {
+    const { tickets } = await state.backend.migrateProject(r.dir);
+    toast(`Migrated ${r.id} to ${FORMAT_VERSION} (${tickets} ticket${tickets === 1 ? "" : "s"} rewritten).`);
+  } catch (err) {
+    toast(`Could not migrate ${r.id}: ${err.message}`, "error");
+    return;
+  }
+  refresh();
 }
 
 function renderBoard() {
@@ -1685,7 +1942,7 @@ function openCreate(projectId, columnId) {
   fillDrawer({
     id: nextTicketId(project),
     title: "",
-    priority: "none",
+    priority: "low",
     size: "",
     assignee: "",
     labels: [],

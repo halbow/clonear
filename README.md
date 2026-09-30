@@ -32,6 +32,10 @@ Click **Open folder** and pick the folder that holds your tickets. Any of these 
 
 Folders without a `cloinear.md` are refused: the board lists them and says why.
 
+To start a new project, click **Create** and pick a folder (e.g. a new
+`tickets/` folder in your repo). The board writes a `cloinear.md` at the current
+format version and the column folders into it, then opens it.
+
 The board remembers the folder for that page. On later visits it opens it
 automatically, or asks with one click, depending on the permission Chrome kept.
 
@@ -93,6 +97,7 @@ demo/                         # demo / test data — open this folder to try the
   mobile-app/
 app/                          # UI (never mixed with data)
   index.html  app.js  styles.css
+  lib/format.js               # cloinear.md format: semver checks, init template, migrations
   lib/frontmatter.js          # parse / rewrite ticket files, render markdown
   lib/search.js               # ticket search
   lib/store.js                # read / write the local folder
@@ -116,15 +121,14 @@ tickets/
 It does three things:
 
 - **Marks the folder as a Cloinear project.** The board refuses folders without one.
-- **Pins the format version** (`version: 1`). A board older than the file refuses it
-  instead of misreading it.
+- **Pins the format version** (`version: 1.0.0`, semver). See [Format versions](#format-versions).
 - **Documents the ticket format.** Its body has a full template ticket with every
   field filled in and the allowed values, so an agent can read it and create or edit
   tickets correctly.
 
 ```markdown
 ---
-version: 1                                 # required: cloinear.md format version
+version: 1.0.0                             # required: cloinear.md format version (semver)
 name: Mobile App                           # optional: display name (default: from folder name)
 columns: [todo, in-progress, in-qa, done]  # optional: column order (default shown)
 ---
@@ -134,6 +138,26 @@ Description, then the ticket template (see tickets/cloinear.md).
 
 Column folders that exist on disk but are missing from `columns` are added at the end.
 
+### Format versions
+
+`version` is the version of the ticket layout, and `FORMAT_VERSION` in
+`app/lib/format.js` is the one this board reads. They are compared with semver:
+
+| File's version vs. the board's | What the board does |
+| --- | --- |
+| Same, or older with the same major | Reads it. |
+| Newer minor/patch (additions only) | Reads it, with a notice. Fields it doesn't know are ignored and kept on save. |
+| Newer major (breaking change) | Refuses it with a warning: update the board. |
+| Older major | Refuses it, with a **Migrate** button that rewrites `cloinear.md` and every ticket to the current version. |
+
+A plain integer (`version: 1`, from before semver) reads as `1.0.0`.
+
+A breaking change bumps the major and adds a step to `MIGRATIONS` in
+`app/lib/format.js` that rewrites `cloinear.md` and each ticket from the previous
+major. Migrations run in order and `cloinear.md` is written last, so its version
+only changes once every ticket is migrated. Commit before migrating, so you can
+review the diff.
+
 ## Ticket format
 
 `tickets/<column>/<TICKET-ID>.md` (or `projects/<project>/<column>/<TICKET-ID>.md`):
@@ -142,7 +166,7 @@ Column folders that exist on disk but are missing from `columns` are added at th
 ---
 title: Fix login redirect loop
 assignee: alexis
-priority: high            # urgent | high | medium | low | none
+priority: high            # urgent | high | medium | low (default: low)
 size: M                   # S | M | L (t-shirt estimate)
 labels: [bug, auth]
 created: 2026-07-14
@@ -165,8 +189,9 @@ git mv tickets/todo/CLO-9.md tickets/in-progress/CLO-9.md
 
 ### Adding a project
 
-For a single board, create `tickets/` with column subfolders and copy this repo's
-`tickets/cloinear.md` into it (change `name` and the ticket prefix). For several,
+Click **Create** in the board and pick the new project folder. By hand: create `tickets/` with column
+subfolders and copy this repo's `tickets/cloinear.md` into it (change `name` and
+the ticket prefix). For several,
 create `projects/<name>/` for each one, laid out the same way.
 
 ## Development

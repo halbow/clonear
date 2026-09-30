@@ -2,13 +2,16 @@
 // (showDirectoryPicker). Read-write, watches the folder for outside changes.
 // FsBackend exposes this shape to the UI:
 //
-//   scan()                         -> { projects: [{ id, name, columns: [{ id, label, tickets }] }],
-//                                       rejected: [{ id, reason }] }
+//   scan()                         -> { projects: [{ id, name, version, newer, columns: [{ id, label, tickets }] }],
+//                                       rejected: [{ id, reason, action, dir }] }
+//                                     action: "migrate" | null
 //   readText(ticket)               -> the file's current content
 //   writeTicket(ticket, raw, opts) -> { lastModified }      (throws ConflictError)
 //   moveTicket(ticket, columnId)   -> { lastModified }
 //   createTicket(project, columnId, id, raw)
 //   deleteTicket(ticket)
+//   initProject()                  -> makes the root a project: cloinear.md + column folders
+//   migrateProject(dir)            -> rewrites cloinear.md and its tickets to FORMAT_VERSION
 //   watch(onChange)                -> { mode, stop }
 //
 // Data model: <projects root>/<project>/<column>/<TICKET-ID>.md. Every project
@@ -17,13 +20,11 @@
 // holds a ticket template for people and agents. Folders without it are refused.
 
 import { parseFrontmatter } from "./frontmatter.js";
+import { DEFAULT_COLUMNS, FORMAT_VERSION, checkVersion, initCloinearMd, migrate } from "./format.js";
 
-export const DEFAULT_COLUMNS = ["todo", "in-progress", "in-qa", "done"];
-// Version of the cloinear.md format this build understands.
-export const FORMAT_VERSION = 1;
 export const MARKER_FILE = "cloinear.md";
 
-const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3, none: 4 };
+const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
 export const SIZES = ["S", "M", "L"];
 const ACRONYMS = new Set(["qa", "ui", "ci", "api", "id", "ux"]);
 // Folders that can hold projects when the user picks a repo root.
@@ -60,7 +61,7 @@ export function ticketFromText(id, raw) {
     body,
     title: str(data.title) || id,
     assignee: str(data.assignee),
-    priority: priority in PRIORITY_ORDER ? priority : "none",
+    priority: priority in PRIORITY_ORDER ? priority : "low", // missing or unknown (e.g. old "none")
     size: SIZES.includes(size) ? size : "",
     labels: labels.filter(Boolean),
     created: str(data.created),
@@ -81,30 +82,40 @@ function sortTickets(tickets) {
 export function nextTicketId(project) {
   const ids = project.columns.flatMap((c) => c.tickets.map((t) => t.id));
   const parsed = ids.map((id) => id.match(/^([A-Za-z]+)-(\d+)$/)).filter(Boolean);
-  const prefix =
-    (parsed[0] && parsed[0][1]) || project.id.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3) || "TIX";
+  const prefix = (parsed[0] && parsed[0][1]) || defaultPrefix(project.id);
   const max = Math.max(0, ...parsed.filter((m) => m[1] === prefix).map((m) => Number(m[2])));
   return `${prefix}-${max + 1}`;
 }
 
+// Ticket id prefix for a project without tickets yet, e.g. web-app -> WEB.
+export function defaultPrefix(projectId) {
+  return projectId.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3) || "TIX";
+}
+
 // Build a project from its cloinear.md and column folder names. Returns
-// { error } when the folder must be refused.
+// { error, action } when the folder must be refused; action says what fixes it.
 export function projectFromParts(id, cloinearMd, dirNames) {
-  if (cloinearMd == null) return { error: `no ${MARKER_FILE}` };
+  if (cloinearMd == null) return { error: `no ${MARKER_FILE}`, action: null };
   const { data } = parseFrontmatter(cloinearMd);
-  const version = Number(data.version);
-  if (!Number.isInteger(version) || version < 1) {
-    return { error: `${MARKER_FILE} has no valid "version"` };
+  const version = String(data.version ?? "");
+  switch (checkVersion(version)) {
+    case "invalid":
+      return { error: `${MARKER_FILE} has no valid "version"`, action: null };
+    case "too-new":
+      return {
+        error: `${MARKER_FILE} is version ${version}, which needs a newer board (this one reads ${FORMAT_VERSION})`,
+        action: null,
+      };
+    case "outdated":
+      return { error: `${MARKER_FILE} is version ${version}; migrate it to ${FORMAT_VERSION}`, action: "migrate" };
   }
-  if (version > FORMAT_VERSION) {
-    return { error: `${MARKER_FILE} is version ${version}; this board supports up to ${FORMAT_VERSION}` };
-  }
+  const newer = checkVersion(version) === "newer";
   const name = typeof data.name === "string" && data.name ? data.name : titleize(id);
   const columns =
     Array.isArray(data.columns) && data.columns.length ? data.columns.filter(Boolean) : [...DEFAULT_COLUMNS];
   // Include every column folder that exists on disk, even if cloinear.md omits it.
   for (const d of dirNames) if (!columns.includes(d)) columns.push(d);
-  return { id, name, version, columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })) };
+  return { id, name, version, newer, columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })) };
 }
 
 // --------------------------------------------------------------------------- //
@@ -121,6 +132,7 @@ async function listEntries(dir) {
   return entries.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+const missingMarker = (id, dir) => ({ id, reason: `no ${MARKER_FILE}`, action: null, dir });
 const hasMarker = (entries) => entries.some((e) => e.kind === "file" && e.name === MARKER_FILE);
 // Looks like a project but lacks cloinear.md: reported instead of silently skipped.
 const looksLikeProject = (entries) =>
@@ -152,7 +164,7 @@ export class FsBackend {
   async resolveProjects() {
     const entries = await listEntries(this.root);
     if (hasMarker(entries)) return { found: [{ id: this.root.name, dir: this.root, entries }], rejected: [] };
-    if (looksLikeProject(entries)) return { found: [], rejected: [{ id: this.root.name, reason: `no ${MARKER_FILE}` }] };
+    if (looksLikeProject(entries)) return { found: [], rejected: [missingMarker(this.root.name, this.root)] };
 
     const container = entries.find((e) => e.kind === "directory" && CONTAINER_DIRS.includes(e.name));
     const baseEntries = container ? await listEntries(container.handle) : entries;
@@ -166,7 +178,7 @@ export class FsBackend {
       if (e.kind !== "directory" || SKIP_DIRS.has(e.name)) continue;
       const sub = await listEntries(e.handle);
       if (hasMarker(sub)) found.push({ id: e.name, dir: e.handle, entries: sub });
-      else if (container || looksLikeProject(sub)) rejected.push({ id: e.name, reason: `no ${MARKER_FILE}` });
+      else if (container || looksLikeProject(sub)) rejected.push(missingMarker(e.name, e.handle));
     }
     return { found, rejected };
   }
@@ -176,7 +188,7 @@ export class FsBackend {
     const scanned = await Promise.all(found.map((p) => this.scanProject(p)));
     const projects = [];
     for (const p of scanned) {
-      if (p.error) rejected.push({ id: p.id, reason: p.error });
+      if (p.error) rejected.push({ id: p.id, reason: p.error, action: p.action, dir: p.dir });
       else projects.push(p);
     }
     return { projects, rejected };
@@ -187,7 +199,7 @@ export class FsBackend {
     const cloinearMd = await (await markerEntry.handle.getFile()).text();
     const dirs = entries.filter((e) => e.kind === "directory");
     const project = projectFromParts(id, cloinearMd, dirs.map((d) => d.name));
-    if (project.error) return { id, error: project.error };
+    if (project.error) return { id, dir, error: project.error, action: project.action };
     project.dir = dir;
 
     await Promise.all(
@@ -273,6 +285,35 @@ export class FsBackend {
   async deleteTicket(ticket) {
     await ticket.dirHandle.removeEntry(ticket.fileName);
     this.cache.delete(ticket.path);
+  }
+
+  // Make the root folder a project: cloinear.md at the current format version,
+  // plus the default column folders.
+  async initProject() {
+    const root = this.root;
+    if (await fileExists(root, MARKER_FILE)) throw new Error(`${root.name}/${MARKER_FILE} already exists.`);
+    const md = initCloinearMd({ name: titleize(root.name), prefix: defaultPrefix(root.name) });
+    for (const col of DEFAULT_COLUMNS) await root.getDirectoryHandle(col, { create: true });
+    await writeFile(await root.getFileHandle(MARKER_FILE, { create: true }), md);
+  }
+
+  // Rewrite a project's cloinear.md and tickets to FORMAT_VERSION. cloinear.md
+  // is written last, so the version only moves once every ticket is migrated.
+  async migrateProject(dir) {
+    const markerHandle = await dir.getFileHandle(MARKER_FILE);
+    const cloinearMd = await (await markerHandle.getFile()).text();
+    const tickets = [];
+    for (const col of await listEntries(dir)) {
+      if (col.kind !== "directory") continue;
+      for (const f of await listEntries(col.handle)) {
+        if (f.kind !== "file" || !f.name.endsWith(".md")) continue;
+        tickets.push({ path: `${col.name}/${f.name}`, handle: f.handle, raw: await (await f.handle.getFile()).text() });
+      }
+    }
+    const out = migrate({ cloinearMd, tickets });
+    for (const t of out.tickets) await writeFile(t.handle, t.raw);
+    await writeFile(markerHandle, out.cloinearMd);
+    return { tickets: out.tickets.length };
   }
 
   // Calls onChange() whenever something may have changed on disk. Uses

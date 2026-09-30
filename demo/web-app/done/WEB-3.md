@@ -1,7 +1,7 @@
 ---
 title: Upgrade to Node 20 in CI
 assignee: alexis
-priority: none
+priority: low
 labels: [chore, ci]
 created: 2026-07-08
 ---

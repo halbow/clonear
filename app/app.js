@@ -1,4 +1,5 @@
 import { renderMarkdown, updateTicketText } from "./lib/frontmatter.js";
+import { FORMAT_VERSION } from "./lib/format.js";
 import { scoreTicket } from "./lib/search.js";
 import {
   ConflictError,
@@ -16,7 +17,6 @@ const PRIORITIES = {
   high: { label: "High", cls: "prio-high" },
   medium: { label: "Medium", cls: "prio-medium" },
   low: { label: "Low", cls: "prio-low" },
-  none: { label: "No priority", cls: "prio-none" },
 };
 
 const AUTOSAVE_MS = 600;
@@ -43,7 +43,9 @@ const els = {
   search: document.getElementById("search"),
   sync: document.getElementById("sync-status"),
   newTicket: document.getElementById("new-ticket"),
+  notices: document.getElementById("notices"),
   openFolder: document.getElementById("open-folder"),
+  createProject: document.getElementById("create-project"),
   drawer: document.getElementById("drawer"),
   drawerOverlay: document.getElementById("drawer-overlay"),
   drawerContent: document.getElementById("drawer-content"),
@@ -60,6 +62,7 @@ async function boot() {
   els.select.addEventListener("change", () => selectProject(els.select.value, { pushUrl: true }));
   els.newTicket.addEventListener("click", () => openCreate(state.projectId));
   els.openFolder.addEventListener("click", pickFolder);
+  els.createProject.addEventListener("click", createProject);
   els.search.addEventListener("input", () => {
     state.query = els.search.value;
     renderBoard();
@@ -85,7 +88,7 @@ async function boot() {
   window.addEventListener("beforeunload", (e) => {
     if (state.drawer && state.drawer.dirty) e.preventDefault();
   });
-  els.openFolder.hidden = !fsSupported;
+  els.openFolder.hidden = els.createProject.hidden = !fsSupported;
 
   const stored = fsSupported ? await loadHandle() : null;
   if (stored) {
@@ -96,16 +99,36 @@ async function boot() {
   renderStart({});
 }
 
-async function pickFolder() {
-  let handle;
+async function chooseDirectory() {
   try {
-    handle = await window.showDirectoryPicker({ id: "cloinear", mode: "readwrite" });
+    return await window.showDirectoryPicker({ id: "cloinear", mode: "readwrite" });
   } catch (err) {
     if (err.name !== "AbortError") toast(err.message, "error");
+    return null;
+  }
+}
+
+async function pickFolder() {
+  const handle = await chooseDirectory();
+  if (!handle) return;
+  await saveHandle(handle).catch(() => {});
+  connect(new FsBackend(handle));
+}
+
+// Pick a folder and make it a project (cloinear.md + column folders), then open it.
+async function createProject() {
+  const handle = await chooseDirectory();
+  if (!handle) return;
+  const backend = new FsBackend(handle);
+  try {
+    await backend.initProject();
+    toast(`Created ${handle.name}/cloinear.md (version ${FORMAT_VERSION}).`);
+  } catch (err) {
+    toast(`Could not create the project: ${err.message}`, "error");
     return;
   }
   await saveHandle(handle).catch(() => {});
-  connect(new FsBackend(handle));
+  connect(backend);
 }
 
 async function reconnect(handle) {
@@ -129,6 +152,7 @@ function disconnect(reason) {
   const stored = state.backend instanceof FsBackend ? state.backend.root : null;
   closeDrawer();
   Object.assign(state, { backend: null, watcher: null, board: null, signature: "" });
+  renderNotices();
   renderStart({ stored, reason });
 }
 
@@ -167,19 +191,16 @@ function applyBoard(board) {
     board.projects.map((p) => [
       p.id,
       p.name,
+      p.version,
       p.columns.map((c) => [c.id, c.tickets.map((t) => [t.id, t.lastModified, t.bytes, t.size, t.raw.length])]),
     ]),
   ]);
   if (signature === state.signature) return;
   state.signature = signature;
-  const before = new Set(state.board ? state.board.rejected.map((r) => r.id) : []);
   state.board = board;
-  const newlyRejected = board.rejected.filter((r) => !before.has(r.id));
-  if (board.projects.length && newlyRejected.length) {
-    toast(`Skipped ${newlyRejected.map((r) => `${r.id} (${r.reason})`).join(", ")}.`, "error");
-  }
 
   renderProjectSelect();
+  renderNotices();
   if (!board.projects.length) {
     renderStart({ empty: true });
     return;
@@ -268,15 +289,22 @@ function renderStart({ stored = null, reason = "", empty = false }) {
       <h2>No Cloinear project in “${escapeHtml(state.backend.name)}”</h2>
       <p>Each project folder needs a <code>cloinear.md</code> next to its <code>todo/</code>,
       <code>done/</code>… subfolders. Pick a project folder, a folder of projects, or a
-      folder containing <code>tickets/</code> or <code>projects/</code>.</p>
+      folder containing <code>tickets/</code> or <code>projects/</code>. To start a new
+      project, use <strong>Create</strong>.</p>
       ${
         rejected.length
           ? `<ul class="start-rejected">${rejected
-              .map((r) => `<li><strong>${escapeHtml(r.id)}</strong>: ${escapeHtml(r.reason)}</li>`)
+              .map(
+                (r, i) =>
+                  `<li><strong>${escapeHtml(r.id)}</strong>: ${escapeHtml(r.reason)}${rejectedAction(r, i)}</li>`
+              )
               .join("")}</ul>`
           : ""
       }
-      <div class="start-actions"><button class="btn btn-primary" data-action="pick">Choose another folder</button></div>`;
+      <div class="start-actions">
+        <button class="btn btn-primary" data-action="pick">Choose another folder</button>
+        <button class="btn" data-action="create">Create a project</button>
+      </div>`;
   } else if (stored) {
     body = `
       <h2>${reason ? escapeHtml(reason) : "Welcome back"}</h2>
@@ -292,13 +320,65 @@ function renderStart({ stored = null, reason = "", empty = false }) {
       or a project folder with a <code>cloinear.md</code> and <code>todo/</code>, <code>done/</code>…
       Changes you make here are written straight to the <code>.md</code> files, and changes made
       on disk show up here live.</p>
-      <div class="start-actions"><button class="btn btn-primary" data-action="pick">Open folder</button></div>`;
+      <div class="start-actions">
+        <button class="btn btn-primary" data-action="pick">Open folder</button>
+        <button class="btn" data-action="create" title="Pick a folder and make it a Cloinear project">Create a project</button>
+      </div>`;
   }
   els.board.innerHTML = `<div class="start-panel">${body}</div>`;
   const pick = els.board.querySelector('[data-action="pick"]');
   if (pick) pick.addEventListener("click", pickFolder);
   const again = els.board.querySelector('[data-action="reconnect"]');
   if (again) again.addEventListener("click", () => reconnect(stored));
+  const create = els.board.querySelector('[data-action="create"]');
+  if (create) create.addEventListener("click", createProject);
+  bindRejectedActions(els.board);
+}
+
+// Skipped projects and projects written by a newer board, shown above the board.
+function renderNotices() {
+  const board = state.board;
+  const items = [];
+  if (board && board.projects.length) {
+    board.rejected.forEach((r, i) =>
+      items.push(
+        `<div class="notice notice-warn">Skipped <strong>${escapeHtml(r.id)}</strong>: ${escapeHtml(r.reason)}${rejectedAction(r, i)}</div>`
+      )
+    );
+    for (const p of board.projects.filter((p) => p.newer)) {
+      items.push(
+        `<div class="notice notice-warn"><strong>${escapeHtml(p.name)}</strong> uses cloinear.md ${escapeHtml(p.version)},
+        newer than this board (${FORMAT_VERSION}). Fields it doesn't know are ignored and kept.</div>`
+      );
+    }
+  }
+  els.notices.hidden = !items.length;
+  els.notices.innerHTML = items.join("");
+  bindRejectedActions(els.notices);
+}
+
+function rejectedAction(r, i) {
+  return r.action === "migrate" && r.dir
+    ? ` <button class="btn" data-rejected="${i}">Migrate to ${FORMAT_VERSION}</button>`
+    : "";
+}
+
+function bindRejectedActions(root) {
+  for (const btn of root.querySelectorAll("[data-rejected]")) {
+    const r = state.board.rejected[Number(btn.dataset.rejected)];
+    btn.addEventListener("click", () => migrateProject(r));
+  }
+}
+
+async function migrateProject(r) {
+  try {
+    const { tickets } = await state.backend.migrateProject(r.dir);
+    toast(`Migrated ${r.id} to ${FORMAT_VERSION} (${tickets} ticket${tickets === 1 ? "" : "s"} rewritten).`);
+  } catch (err) {
+    toast(`Could not migrate ${r.id}: ${err.message}`, "error");
+    return;
+  }
+  refresh();
 }
 
 function renderBoard() {
@@ -482,7 +562,7 @@ function openCreate(projectId, columnId) {
   fillDrawer({
     id: nextTicketId(project),
     title: "",
-    priority: "none",
+    priority: "low",
     size: "",
     assignee: "",
     labels: [],

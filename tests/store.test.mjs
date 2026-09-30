@@ -1,10 +1,13 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { FORMAT_VERSION, projectFromParts } from "../app/lib/store.js";
+import { FORMAT_VERSION, initCloinearMd } from "../app/lib/format.js";
+import { projectFromParts, ticketFromText } from "../app/lib/store.js";
+
+const md = (version) => `---\nversion: ${version}\n---\n`;
 
 test("a folder without cloinear.md is refused", () => {
-  assert.deepEqual(projectFromParts("web", null, ["todo"]), { error: "no cloinear.md" });
+  assert.deepEqual(projectFromParts("web", null, ["todo"]), { error: "no cloinear.md", action: null });
 });
 
 test("cloinear.md needs a valid version", () => {
@@ -12,9 +15,28 @@ test("cloinear.md needs a valid version", () => {
   assert.match(projectFromParts("web", "---\nversion: abc\n---\n", []).error, /no valid "version"/);
 });
 
-test("a newer format version is refused", () => {
-  const out = projectFromParts("web", `---\nversion: ${FORMAT_VERSION + 1}\n---\n`, []);
-  assert.match(out.error, /supports up to/);
+test("a newer major version is refused with a warning", () => {
+  const out = projectFromParts("web", md("2.0.0"), []);
+  assert.match(out.error, /needs a newer board/);
+  assert.equal(out.action, null);
+});
+
+test("a newer minor version is read, and flagged", () => {
+  const p = projectFromParts("web", "---\nversion: 1.4.0\nswimlanes: [a, b]\n---\n", []);
+  assert.equal(p.error, undefined);
+  assert.equal(p.newer, true);
+});
+
+test("the current version, and the legacy integer 1, are read as-is", () => {
+  assert.equal(projectFromParts("web", md(FORMAT_VERSION), []).newer, false);
+  assert.equal(projectFromParts("web", md(1), []).newer, false);
+});
+
+test("init writes a cloinear.md the board reads at the current version", () => {
+  const p = projectFromParts("tickets", initCloinearMd({ name: "My App", prefix: "APP" }), []);
+  assert.equal(p.name, "My App");
+  assert.equal(p.version, FORMAT_VERSION);
+  assert.deepEqual(p.columns.map((c) => c.id), ["todo", "in-progress", "in-qa", "done"]);
 });
 
 test("reads name and column order, and appends extra column folders", () => {
@@ -35,3 +57,9 @@ for (const dir of ["tickets", "demo/web-app", "demo/mobile-app"]) {
     assert.equal(projectFromParts("x", raw, []).error, undefined);
   });
 }
+
+test("priority defaults to low when missing or unknown (including the old none)", () => {
+  for (const fm of ["", "priority: none\n", "priority: whatever\n"]) {
+    assert.equal(ticketFromText("WEB-1", `---\ntitle: A\n${fm}---\n`).priority, "low", fm);
+  }
+});

@@ -13,7 +13,6 @@
   --prio-high: #f2994a;
   --prio-medium: #e2b93b;
   --prio-low: #7d8590;
-  --prio-none: #c3c6cf;
 }
 
 @media (prefers-color-scheme: dark) {
@@ -27,7 +26,6 @@
     --accent: #7c8aff;
     --shadow: none;
     --shadow-lg: 0 12px 48px rgba(0, 0, 0, 0.55);
-    --prio-none: #3a3d47;
   }
 }
 
@@ -225,7 +223,6 @@ body {
 .prio-high { background: var(--prio-high); }
 .prio-medium { background: var(--prio-medium); }
 .prio-low { background: var(--prio-low); }
-.prio-none { background: var(--prio-none); }
 
 /* ---- drawer ---- */
 .drawer-overlay {
@@ -355,6 +352,21 @@ body {
 }
 .start-actions { display: flex; gap: 10px; justify-content: center; margin-top: 20px; }
 .start-rejected { display: inline-block; text-align: left; color: var(--text-dim); margin: 8px 0 0; padding-left: 20px; }
+
+.start-rejected li { margin: 4px 0; }
+.start-rejected .btn { margin-left: 8px; padding: 1px 10px; }
+
+/* ---- notices: projects that were skipped or need attention ---- */
+.notices {
+  flex: 0 0 auto;
+  padding: 8px 20px;
+  border-bottom: 1px solid var(--border);
+  background: var(--surface-2);
+  font-size: 13px;
+}
+.notice { display: flex; align-items: center; gap: 10px; margin: 2px 0; }
+.notice-warn::before { content: "⚠"; color: var(--prio-high); }
+.notice .btn { padding: 1px 10px; }
 
 /* ---- column add & drag and drop ---- */
 .column-add {
