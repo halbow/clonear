@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Bundle the UI in app/ into one self-contained file: dist/cloinear.html.
+"""Bundle the UI in app/ into one self-contained file: dist/clonear.html.
 
 Drop that file next to (or inside) any ticket folder, open it in a Chromium
 browser, pick the folder once, and the board reads and writes the .md files
@@ -8,8 +8,8 @@ fetch() on file:// pages, so all CSS and JS are inlined.
 
 Zero dependencies: python3 standard library only.
 
-    python3 bundle.py            # write dist/cloinear.html
-    python3 bundle.py --check    # exit 1 if dist/cloinear.html is missing or stale
+    python3 bundle.py            # write dist/clonear.html
+    python3 bundle.py --check    # exit 1 if dist/clonear.html is missing or stale
 
 Modules are wrapped in their own function scope, so two modules may define the
 same private helper. Only the import/export forms used in app/ are supported:
@@ -25,7 +25,7 @@ import sys
 
 ROOT = os.path.dirname(os.path.abspath(__file__))
 APP_DIR = os.path.join(ROOT, "app")
-OUT_PATH = os.path.join(ROOT, "dist", "cloinear.html")
+OUT_PATH = os.path.join(ROOT, "dist", "clonear.html")
 
 IMPORT_RE = re.compile(r'^import\s*\{([^}]*)\}\s*from\s*"([^"]+)";?\s*$', re.M)
 EXPORT_RE = re.compile(r"^export\s+(?:async\s+)?(?:function\*?|class|const|let)\s+([A-Za-z_$][\w$]*)", re.M)
@@ -117,15 +117,15 @@ def main(argv):
             with open(OUT_PATH, "r", encoding="utf-8") as fh:
                 current = fh.read()
         if current != payload:
-            print("dist/cloinear.html is missing or stale; run: python3 bundle.py", file=sys.stderr)
+            print("dist/clonear.html is missing or stale; run: python3 bundle.py", file=sys.stderr)
             return 1
-        print("dist/cloinear.html is up to date.")
+        print("dist/clonear.html is up to date.")
         return 0
 
     os.makedirs(os.path.dirname(OUT_PATH), exist_ok=True)
     with open(OUT_PATH, "w", encoding="utf-8") as fh:
         fh.write(payload)
-    print(f"Wrote dist/cloinear.html ({len(payload) // 1024} KB).")
+    print(f"Wrote dist/clonear.html ({len(payload) // 1024} KB).")
     return 0
 
 

@@ -23,7 +23,7 @@ const EXPECTED = {
   "base-uri": ["'none'"],
 };
 
-for (const file of ["app/index.html", "dist/cloinear.html"]) {
+for (const file of ["app/index.html", "dist/clonear.html"]) {
   test(`${file}: CSP blocks every other origin`, () => {
     const policy = csp(read(file));
     for (const [name, values] of Object.entries(EXPECTED)) assert.deepEqual(policy[name], values, name);
@@ -34,8 +34,8 @@ for (const file of ["app/index.html", "dist/cloinear.html"]) {
   });
 }
 
-test("dist/cloinear.html: only the bundled scripts may run", () => {
-  const scriptSrc = csp(read("dist/cloinear.html"))["script-src"];
+test("dist/clonear.html: only the bundled scripts may run", () => {
+  const scriptSrc = csp(read("dist/clonear.html"))["script-src"];
   assert.ok(scriptSrc.length > 0 && scriptSrc.every((v) => v.startsWith("'sha256-")), scriptSrc.join(" "));
 });
 

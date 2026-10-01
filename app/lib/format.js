@@ -1,4 +1,4 @@
-// The cloinear.md format: its semver version, the file `init` writes, and the
+// The clonear.md format: its semver version, the file `init` writes, and the
 // migrations that bring an older project up to date.
 //
 // Versioning rules (the file's version vs. FORMAT_VERSION):
@@ -9,7 +9,7 @@
 // - older major: refused until migrated
 //
 // A breaking change bumps the major and adds an entry to MIGRATIONS that
-// rewrites cloinear.md and every ticket from the previous major.
+// rewrites clonear.md and every ticket from the previous major.
 
 import { parseFrontmatter, updateTicketText } from "./frontmatter.js";
 
@@ -21,7 +21,7 @@ export const DEFAULT_COLUMNS = ["todo", "in-progress", "in-qa", "done"];
 export const MIGRATIONS = [];
 
 // "1.2.3" -> { major, minor, patch }. "1" and "1.2" are read as "1.0.0" and
-// "1.2.0" (early cloinear.md files used a plain integer). null when invalid.
+// "1.2.0" (early clonear.md files used a plain integer). null when invalid.
 export function parseVersion(value) {
   const m = String(value ?? "").trim().match(/^(\d+)(?:\.(\d+))?(?:\.(\d+))?$/);
   if (!m || Number(m[1]) < 1) return null;
@@ -34,7 +34,7 @@ export function compareVersions(a, b) {
 
 const format = (v) => `${v.major}.${v.minor}.${v.patch}`;
 
-// How this board should treat a cloinear.md with `value` as its version:
+// How this board should treat a clonear.md with `value` as its version:
 // "ok" | "newer" (newer minor/patch, readable) | "too-new" | "outdated" | "invalid".
 export function checkVersion(value, current = FORMAT_VERSION) {
   const v = parseVersion(value);
@@ -48,10 +48,10 @@ export function checkVersion(value, current = FORMAT_VERSION) {
 // Bring a project to `target`: runs every migration after the file's version,
 // then stamps the new version. `tickets` is [{ path, raw }]; returns the same
 // shape with only the tickets whose content changed.
-export function migrate({ cloinearMd, tickets }, { migrations = MIGRATIONS, target = FORMAT_VERSION } = {}) {
-  const from = parseVersion(parseFrontmatter(cloinearMd).data.version);
+export function migrate({ clonearMd, tickets }, { migrations = MIGRATIONS, target = FORMAT_VERSION } = {}) {
+  const from = parseVersion(parseFrontmatter(clonearMd).data.version);
   const to = parseVersion(target);
-  if (!from) throw new Error('cloinear.md has no valid "version"');
+  if (!from) throw new Error('clonear.md has no valid "version"');
   if (compareVersions(from, to) > 0) throw new Error(`cannot migrate ${format(from)} down to ${format(to)}`);
 
   const steps = migrations.filter((m) => {
@@ -64,7 +64,7 @@ export function migrate({ cloinearMd, tickets }, { migrations = MIGRATIONS, targ
     }
   }
 
-  let md = cloinearMd;
+  let md = clonearMd;
   let out = tickets.map((t) => ({ ...t }));
   for (const step of steps) {
     if (step.project) md = step.project(md);
@@ -72,20 +72,20 @@ export function migrate({ cloinearMd, tickets }, { migrations = MIGRATIONS, targ
   }
   md = updateTicketText(md, { version: format(to) }, parseFrontmatter(md).body);
   const changed = out.filter((t, i) => t.raw !== tickets[i].raw);
-  return { cloinearMd: md, tickets: changed };
+  return { clonearMd: md, tickets: changed };
 }
 
-// The cloinear.md `init` writes: current version, name, columns, and the
+// The clonear.md `init` writes: current version, name, columns, and the
 // ticket template people and agents follow.
-export function initCloinearMd({ name, prefix, columns = DEFAULT_COLUMNS }) {
+export function initClonearMd({ name, prefix, columns = DEFAULT_COLUMNS }) {
   return `---
 version: ${FORMAT_VERSION}
 name: ${name}
 columns: [${columns.join(", ")}]
 ---
 
-This file marks the folder as a Cloinear project; the board refuses folders
-without it. \`version\` is the cloinear.md format version (semver), \`name\` is
+This file marks the folder as a Clonear project; the board refuses folders
+without it. \`version\` is the clonear.md format version (semver), \`name\` is
 the display name, and \`columns\` is the column order (each column is a
 subfolder).
 

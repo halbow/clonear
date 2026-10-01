@@ -13,7 +13,7 @@
       content="default-src 'none'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-    <title>Cloinear</title>
+    <title>Clonear</title>
     <link
       rel="icon"
       href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Ctext y='.9em' font-size='90'%3E%E2%97%90%3C/text%3E%3C/svg%3E"
@@ -22,7 +22,7 @@
       // Chrome blocks module scripts on file://, so this dev page can't run
       // there; hand over to the single-file build. (No-op inside the bundle.)
       if (location.protocol === "file:" && /\/app\/(index\.html)?$/.test(location.pathname)) {
-        location.replace("../dist/cloinear.html" + location.hash);
+        location.replace("../dist/clonear.html" + location.hash);
       }
     </script>
     <link rel="stylesheet" href="styles.css" />
@@ -31,7 +31,7 @@
     <header class="topbar">
       <div class="brand">
         <span class="logo">◐</span>
-        <span class="brand-name">Cloinear</span>
+        <span class="brand-name">Clonear</span>
       </div>
       <label class="project-picker">
         <span class="sr-only">Project</span>
@@ -45,8 +45,8 @@
       <div class="topbar-spacer"></div>
       <span id="sync-status" class="sync-status" hidden></span>
       <span id="ticket-count" class="ticket-count" hidden></span>
-      <button id="open-folder" class="btn" title="Open a folder with a cloinear.md">Open</button>
-      <button id="create-project" class="btn" title="Pick a folder and make it a Cloinear project">Create</button>
+      <button id="open-folder" class="btn" title="Open a folder with a clonear.md">Open</button>
+      <button id="create-project" class="btn" title="Pick a folder and make it a Clonear project">Create</button>
     </header>
 
     <div id="notices" class="notices" hidden></div>

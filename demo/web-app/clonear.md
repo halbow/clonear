@@ -6,8 +6,8 @@ columns: [todo, in-progress, in-qa, done]
 
 The main customer-facing web application board.
 
-This file marks the folder as a Cloinear project; the board refuses folders
-without it. `version` is the cloinear.md format version (semver), `name` is the
+This file marks the folder as a Clonear project; the board refuses folders
+without it. `version` is the clonear.md format version (semver), `name` is the
 display name, and `columns` is the column order (each column is a subfolder).
 
 ## Tickets

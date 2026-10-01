@@ -1,16 +1,16 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
-import { FORMAT_VERSION, initCloinearMd } from "../app/lib/format.js";
+import { FORMAT_VERSION, initClonearMd } from "../app/lib/format.js";
 import { projectFromParts, ticketFromText } from "../app/lib/store.js";
 
 const md = (version) => `---\nversion: ${version}\n---\n`;
 
-test("a folder without cloinear.md is refused", () => {
-  assert.deepEqual(projectFromParts("web", null, ["todo"]), { error: "no cloinear.md", action: null });
+test("a folder without clonear.md is refused", () => {
+  assert.deepEqual(projectFromParts("web", null, ["todo"]), { error: "no clonear.md", action: null });
 });
 
-test("cloinear.md needs a valid version", () => {
+test("clonear.md needs a valid version", () => {
   assert.match(projectFromParts("web", "---\nname: Web\n---\n", []).error, /no valid "version"/);
   assert.match(projectFromParts("web", "---\nversion: abc\n---\n", []).error, /no valid "version"/);
 });
@@ -32,8 +32,8 @@ test("the current version, and the legacy integer 1, are read as-is", () => {
   assert.equal(projectFromParts("web", md(1), []).newer, false);
 });
 
-test("init writes a cloinear.md the board reads at the current version", () => {
-  const p = projectFromParts("tickets", initCloinearMd({ name: "My App", prefix: "APP" }), []);
+test("init writes a clonear.md the board reads at the current version", () => {
+  const p = projectFromParts("tickets", initClonearMd({ name: "My App", prefix: "APP" }), []);
   assert.equal(p.name, "My App");
   assert.equal(p.version, FORMAT_VERSION);
   assert.deepEqual(p.columns.map((c) => c.id), ["todo", "in-progress", "in-qa", "done"]);
@@ -52,8 +52,8 @@ test("defaults name and columns", () => {
 });
 
 for (const dir of ["tickets", "demo/web-app", "demo/mobile-app"]) {
-  test(`${dir}/cloinear.md is valid`, () => {
-    const raw = readFileSync(new URL(`../${dir}/cloinear.md`, import.meta.url), "utf8");
+  test(`${dir}/clonear.md is valid`, () => {
+    const raw = readFileSync(new URL(`../${dir}/clonear.md`, import.meta.url), "utf8");
     assert.equal(projectFromParts("x", raw, []).error, undefined);
   });
 }

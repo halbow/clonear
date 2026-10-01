@@ -1,19 +1,19 @@
 ---
 version: 1.0.0
-name: Mobile App
+name: Clonear
 columns: [todo, in-progress, in-qa, done]
 ---
 
-Demo board for the mobile app.
+Tickets for building Clonear itself.
 
-This file marks the folder as a Cloinear project; the board refuses folders
-without it. `version` is the cloinear.md format version (semver), `name` is the
+This file marks the folder as a Clonear project; the board refuses folders
+without it. `version` is the clonear.md format version (semver), `name` is the
 display name, and `columns` is the column order (each column is a subfolder).
 
 ## Tickets
 
-A ticket is `<column>/<ID>.md`, e.g. `todo/MOB-7.md`. The filename stem is the
-id (`MOB-<next number>`); the folder it sits in is its status. To move a
+A ticket is `<column>/<ID>.md`, e.g. `todo/CLO-7.md`. The filename stem is the
+id (`CLO-<next number>`); the folder it sits in is its status. To move a
 ticket, move the file to another column folder.
 
 ## Template

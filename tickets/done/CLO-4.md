@@ -1,12 +1,12 @@
 ---
-title: Init cloinear.md and version the ticket layout with semver
+title: Init clonear.md and version the ticket layout with semver
 priority: medium
 size: L
 labels: [feature, format]
 created: 2026-09-30
 ---
 
-Add a way to **init** a project: create the `cloinear.md` file (and column
+Add a way to **init** a project: create the `clonear.md` file (and column
 folders) stamped with the current format version, so nobody has to copy it by
 hand.
 
@@ -26,16 +26,16 @@ supports (`FORMAT_VERSION` in `app/lib/format.js`):
 ## Migration
 
 Provide a way to migrate tickets from a previous version to the current one:
-rewrite `cloinear.md` and the ticket files to the new layout and bump the
+rewrite `clonear.md` and the ticket files to the new layout and bump the
 version. Each breaking change ships with its migration step.
 
 ## Acceptance criteria
 
-- Init creates `cloinear.md` with the current version, name, columns and
+- Init creates `clonear.md` with the current version, name, columns and
   ticket template.
 - Newer minor version loads; unknown fields are ignored and preserved.
 - Newer major version is refused with a clear warning.
 - An older major version is refused with an offer to migrate; migrating
-  brings `cloinear.md` and every ticket to the current version.
+  brings `clonear.md` and every ticket to the current version.
 - Existing `version: 1` files keep working (treated as `1.0.0`).
 - Tests cover the version comparison and a migration.

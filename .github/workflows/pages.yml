@@ -1,4 +1,4 @@
-name: Publish Cloinear to GitHub Pages
+name: Publish Clonear to GitHub Pages
 
 on:
   push:
@@ -28,12 +28,12 @@ jobs:
       - name: Run the tests
         run: node --test tests/*.test.mjs
 
-      - name: Check dist/cloinear.html is up to date with app/
+      - name: Check dist/clonear.html is up to date with app/
         run: python3 bundle.py --check
 
       # Publish only the single-file board, as the site's index page.
       - name: Prepare site
-        run: mkdir _site && cp dist/cloinear.html _site/index.html
+        run: mkdir _site && cp dist/clonear.html _site/index.html
 
       - name: Configure Pages
         uses: actions/configure-pages@v5

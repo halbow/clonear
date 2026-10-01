@@ -101,7 +101,7 @@ async function boot() {
 
 async function chooseDirectory() {
   try {
-    return await window.showDirectoryPicker({ id: "cloinear", mode: "readwrite" });
+    return await window.showDirectoryPicker({ id: "clonear", mode: "readwrite" });
   } catch (err) {
     if (err.name !== "AbortError") toast(err.message, "error");
     return null;
@@ -115,14 +115,14 @@ async function pickFolder() {
   connect(new FsBackend(handle));
 }
 
-// Pick a folder and make it a project (cloinear.md + column folders), then open it.
+// Pick a folder and make it a project (clonear.md + column folders), then open it.
 async function createProject() {
   const handle = await chooseDirectory();
   if (!handle) return;
   const backend = new FsBackend(handle);
   try {
     await backend.initProject();
-    toast(`Created ${handle.name}/cloinear.md (version ${FORMAT_VERSION}).`);
+    toast(`Created ${handle.name}/clonear.md (version ${FORMAT_VERSION}).`);
   } catch (err) {
     toast(`Could not create the project: ${err.message}`, "error");
     return;
@@ -281,13 +281,13 @@ function renderStart({ stored = null, reason = "", empty = false }) {
   if (!fsSupported) {
     body = `
       <h2>Open this board in Chrome, Edge or Arc</h2>
-      <p>Cloinear reads and writes your ticket folder with the File System Access API,
+      <p>Clonear reads and writes your ticket folder with the File System Access API,
       which only Chromium-based browsers support.</p>`;
   } else if (empty) {
     const rejected = state.board ? state.board.rejected : [];
     body = `
-      <h2>No Cloinear project in “${escapeHtml(state.backend.name)}”</h2>
-      <p>Each project folder needs a <code>cloinear.md</code> next to its <code>todo/</code>,
+      <h2>No Clonear project in “${escapeHtml(state.backend.name)}”</h2>
+      <p>Each project folder needs a <code>clonear.md</code> next to its <code>todo/</code>,
       <code>done/</code>… subfolders. Pick a project folder, a folder of projects, or a
       folder containing <code>tickets/</code> or <code>projects/</code>. To start a new
       project, use <strong>Create</strong>.</p>
@@ -317,12 +317,12 @@ function renderStart({ stored = null, reason = "", empty = false }) {
     body = `
       <h2>Open a ticket folder</h2>
       <p>Pick the folder that holds your tickets: the one containing <code>tickets/</code>,
-      or a project folder with a <code>cloinear.md</code> and <code>todo/</code>, <code>done/</code>…
+      or a project folder with a <code>clonear.md</code> and <code>todo/</code>, <code>done/</code>…
       Changes you make here are written straight to the <code>.md</code> files, and changes made
       on disk show up here live.</p>
       <div class="start-actions">
         <button class="btn btn-primary" data-action="pick">Open folder</button>
-        <button class="btn" data-action="create" title="Pick a folder and make it a Cloinear project">Create a project</button>
+        <button class="btn" data-action="create" title="Pick a folder and make it a Clonear project">Create a project</button>
       </div>`;
   }
   els.board.innerHTML = `<div class="start-panel">${body}</div>`;
@@ -347,7 +347,7 @@ function renderNotices() {
     );
     for (const p of board.projects.filter((p) => p.newer)) {
       items.push(
-        `<div class="notice notice-warn"><strong>${escapeHtml(p.name)}</strong> uses cloinear.md ${escapeHtml(p.version)},
+        `<div class="notice notice-warn"><strong>${escapeHtml(p.name)}</strong> uses clonear.md ${escapeHtml(p.version)},
         newer than this board (${FORMAT_VERSION}). Fields it doesn't know are ignored and kept.</div>`
       );
     }
