@@ -11,7 +11,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-YY2XfNYvdm6JGGROG4OumjGZFPP3TV252CzIz/BNODY=' 'sha256-7HI3t3oo++Qlgs0/NuVnIR3iBNEb7aotDD905qrEvQ4='; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+      content="default-src 'none'; script-src 'sha256-YY2XfNYvdm6JGGROG4OumjGZFPP3TV252CzIz/BNODY=' 'sha256-fStr2LuN88EzlyK3CpTnN+uOcNrJR1YmGsDT6TRxJtM='; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Clonear</title>
@@ -131,8 +131,7 @@ body {
   display: flex;
   gap: 14px;
   padding: 16px 20px;
-  overflow-x: auto;
-  overflow-y: hidden;
+  overflow: auto;
   align-items: flex-start;
 }
 
@@ -142,8 +141,7 @@ body {
   display: flex;
   flex-direction: column;
   background: transparent;
-  height: 100%;
-  min-height: 0;
+  min-height: 100%;
 }
 .column-header {
   display: flex;
@@ -151,7 +149,9 @@ body {
   gap: 8px;
   padding: 4px 6px 10px;
   position: sticky;
-  top: 0;
+  top: -16px;
+  z-index: 1;
+  background: var(--bg);
 }
 .column-title { font-weight: 600; font-size: 13px; }
 .column-count {
@@ -165,9 +165,7 @@ body {
   display: flex;
   flex-direction: column;
   gap: 8px;
-  overflow-y: auto;
   padding: 2px;
-  min-height: 0;
 }
 .column-empty {
   color: var(--text-dim);
@@ -485,6 +483,13 @@ textarea.dt-title {
   min-width: 0;
 }
 .dt-meta .dt-static { padding: 5px 0; }
+.dt-meta .dt-wide { grid-column: 1 / -1; }
+.dt-hint { color: var(--text-dim); font-size: 12px; margin: -12px 0 24px; }
+
+.dt-section { margin-top: 32px; padding-top: 16px; border-top: 1px solid var(--border); }
+.dt-section h3 { margin: 0 0 6px; font-size: 14px; }
+.dt-section p { margin: 0 0 12px; color: var(--text-dim); font-size: 13px; }
+.dt-section-actions { display: flex; gap: 10px; }
 
 textarea.dt-title:hover,
 .dt-editor:hover { border-color: var(--border); }
@@ -564,7 +569,6 @@ textarea.dt-title:focus,
         <span class="sr-only">Project</span>
         <select id="project-select" aria-label="Select project" hidden></select>
       </label>
-      <button id="new-ticket" class="btn btn-primary" title="New ticket (C)" hidden>+ New ticket</button>
       <label class="search" hidden id="search-box">
         <span class="sr-only">Search tickets</span>
         <input id="search" type="search" placeholder="Search tickets…  /" autocomplete="off" spellcheck="false" />
@@ -572,8 +576,8 @@ textarea.dt-title:focus,
       <div class="topbar-spacer"></div>
       <span id="sync-status" class="sync-status" hidden></span>
       <span id="ticket-count" class="ticket-count" hidden></span>
-      <button id="open-folder" class="btn" title="Open a folder with a clonear.md">Open</button>
-      <button id="create-project" class="btn" title="Pick a folder and make it a Clonear project">Create</button>
+      <button id="new-ticket" class="btn btn-primary" title="New ticket (C)" hidden>+ New ticket</button>
+      <button id="project-settings" class="btn" title="Project settings, open or create a project" hidden>Settings</button>
       <!-- Folder picker for browsers without the File System Access API (read-only board). -->
       <input id="folder-input" type="file" webkitdirectory multiple hidden />
     </header>
@@ -840,7 +844,7 @@ const __mod_lib_format = (() => {
 // rewrites clonear.md and every ticket from the previous major.
 
 const { parseFrontmatter, updateTicketText } = __mod_lib_frontmatter;
-const FORMAT_VERSION = "1.0.0";
+const FORMAT_VERSION = "1.1.0";
 const DEFAULT_COLUMNS = ["todo", "in-progress", "in-qa", "done"];
 
 // { to: "2.0.0", project(md) -> md, ticket(raw) -> raw }, oldest first.
@@ -902,19 +906,22 @@ function migrate({ clonearMd, tickets }, { migrations = MIGRATIONS, target = FOR
   return { clonearMd: md, tickets: changed };
 }
 
-// The clonear.md `init` writes: current version, name, columns, and the
-// ticket template people and agents follow.
-function initClonearMd({ name, prefix, columns = DEFAULT_COLUMNS }) {
+// The clonear.md `init` writes: current version, name, prefix, columns,
+// labels, and the ticket template people and agents follow.
+function initClonearMd({ name, prefix, columns = DEFAULT_COLUMNS, labels = [] }) {
   return `---
 version: ${FORMAT_VERSION}
 name: ${name}
+prefix: ${prefix}
 columns: [${columns.join(", ")}]
+labels: [${labels.join(", ")}]
 ---
 
 This file marks the folder as a Clonear project; the board refuses folders
 without it. \`version\` is the clonear.md format version (semver), \`name\` is
-the display name, and \`columns\` is the column order (each column is a
-subfolder).
+the display name, \`prefix\` is the ticket id prefix, \`columns\` is the
+column order (each column is a subfolder), and \`labels\` are the project's
+labels, suggested when editing a ticket.
 
 ## Tickets
 
@@ -932,7 +939,7 @@ title: Fix login redirect loop   # required, one line
 assignee: dave                   # free text, optional
 priority: medium                 # urgent | high | medium | low (default: low)
 size: M                          # S | M | L (t-shirt estimate)
-labels: [bug, auth]              # list of free-text tags
+labels: [bug, auth]              # free-text tags; prefer the project's labels
 created: 2026-09-30              # YYYY-MM-DD
 ---
 
@@ -1016,7 +1023,7 @@ const __mod_lib_store = (() => {
 // of a folder picked with <input type="file" webkitdirectory>.
 // FsBackend exposes this shape to the UI:
 //
-//   scan()                         -> { projects: [{ id, name, version, newer, columns: [{ id, label, tickets }] }],
+//   scan()                         -> { projects: [{ id, name, prefix, labels, version, newer, columns: [{ id, label, tickets }] }],
 //                                       rejected: [{ id, reason, action, dir }] }
 //                                     action: "migrate" | null
 //   readText(ticket)               -> the file's current content
@@ -1024,7 +1031,9 @@ const __mod_lib_store = (() => {
 //   moveTicket(ticket, columnId)   -> { lastModified }
 //   createTicket(project, columnId, id, raw)
 //   deleteTicket(ticket)
-//   initProject(name)              -> makes the root a project: clonear.md + column folders
+//   initProject(name, prefix)      -> makes the root a project: clonear.md + column folders
+//   writeSettings(project, fields, opts) -> rewrites name / prefix / labels in clonear.md, and renames the
+//                                     tickets to a new prefix -> { renamed }   (throws ConflictError)
 //   migrateProject(dir)            -> rewrites clonear.md and its tickets to FORMAT_VERSION
 //   watch(onChange)                -> { mode, stop }       mode: "live" | "polling" | "readonly"
 //   readonly                       -> true when every write above throws
@@ -1034,8 +1043,8 @@ const __mod_lib_store = (() => {
 // project, pins the format version, sets the display name and column order, and
 // holds a ticket template for people and agents. Folders without it are refused.
 
-const { parseFrontmatter } = __mod_lib_frontmatter;
-const { DEFAULT_COLUMNS, FORMAT_VERSION, checkVersion, initClonearMd, migrate } = __mod_lib_format;
+const { parseFrontmatter, updateTicketText } = __mod_lib_frontmatter;
+const { DEFAULT_COLUMNS, FORMAT_VERSION, checkVersion, compareVersions, initClonearMd, migrate, parseVersion } = __mod_lib_format;
 const MARKER_FILE = "clonear.md";
 
 const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
@@ -1092,18 +1101,60 @@ function sortTickets(tickets) {
   );
 }
 
-// Next free id in a project, e.g. WEB-6. Reuses the prefix already in use.
+// Next free id in a project, e.g. WEB-6. Uses the prefix from clonear.md,
+// else the one already in use, else one made from the folder name.
 function nextTicketId(project) {
-  const ids = project.columns.flatMap((c) => c.tickets.map((t) => t.id));
-  const parsed = ids.map((id) => id.match(/^([A-Za-z]+)-(\d+)$/)).filter(Boolean);
-  const prefix = (parsed[0] && parsed[0][1]) || defaultPrefix(project.id);
-  const max = Math.max(0, ...parsed.filter((m) => m[1] === prefix).map((m) => Number(m[2])));
+  const prefix = currentPrefix(project);
+  const max = Math.max(0, ...parsedIds(project).filter((m) => m.prefix === prefix).map((m) => m.number));
   return `${prefix}-${max + 1}`;
+}
+
+// The prefix new tickets get: clonear.md's, else the one in use, else one
+// made from the folder name.
+function currentPrefix(project) {
+  const parsed = parsedIds(project);
+  return project.prefix || (parsed[0] && parsed[0].prefix) || defaultPrefix(project.id);
+}
+
+// Tickets whose id is <prefix>-<number>, e.g. { ticket, prefix: "WEB", number: 6 }.
+function parsedIds(project) {
+  return project.columns.flatMap((c) =>
+    c.tickets.flatMap((ticket) => {
+      const m = ticket.id.match(/^([A-Za-z]+)-(\d+)$/);
+      return m ? [{ ticket, prefix: m[1], number: Number(m[2]) }] : [];
+    })
+  );
+}
+
+// Changing the prefix renames the tickets that use the current one, e.g.
+// TIC-3 -> CLO-3: [{ ticket, id }]. Tickets with another prefix are left alone.
+function prefixRenames(project, prefix) {
+  const from = currentPrefix(project);
+  if (!prefix || prefix === from) return [];
+  return parsedIds(project)
+    .filter((m) => m.prefix === from)
+    .map((m) => ({ ticket: m.ticket, id: `${prefix}-${m.number}` }));
 }
 
 // Ticket id prefix for a project without tickets yet, e.g. web-app -> WEB.
 function defaultPrefix(projectId) {
   return projectId.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3) || "TIX";
+}
+
+// A ticket id prefix as typed by someone, e.g. " clo " -> "CLO". "" when it
+// isn't letters only.
+function normalizePrefix(value) {
+  const prefix = String(value ?? "").trim().toUpperCase();
+  return /^[A-Z]+$/.test(prefix) ? prefix : "";
+}
+
+// clonear.md with its name / prefix / labels replaced by `fields`. Stamps the
+// current format version on older files, since prefix and labels need it.
+function updateClonearMd(raw, fields) {
+  const { data, body } = parseFrontmatter(raw);
+  const version = parseVersion(data.version);
+  const stamp = !version || compareVersions(version, parseVersion(FORMAT_VERSION)) < 0;
+  return updateTicketText(raw, stamp ? { version: FORMAT_VERSION, ...fields } : fields, body);
 }
 
 // Build a project from its clonear.md and column folder names. Returns
@@ -1125,11 +1176,22 @@ function projectFromParts(id, clonearMd, dirNames) {
   }
   const newer = checkVersion(version) === "newer";
   const name = typeof data.name === "string" && data.name ? data.name : titleize(id);
+  const prefix = normalizePrefix(typeof data.prefix === "string" ? data.prefix : "");
+  let labels = data.labels || [];
+  if (!Array.isArray(labels)) labels = [labels];
   const columns =
     Array.isArray(data.columns) && data.columns.length ? data.columns.filter(Boolean) : [...DEFAULT_COLUMNS];
   // Include every column folder that exists on disk, even if clonear.md omits it.
   for (const d of dirNames) if (!columns.includes(d)) columns.push(d);
-  return { id, name, version, newer, columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })) };
+  return {
+    id,
+    name,
+    prefix,
+    labels: labels.map(String).filter(Boolean),
+    version,
+    newer,
+    columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })),
+  };
 }
 
 // --------------------------------------------------------------------------- //
@@ -1214,11 +1276,13 @@ class FsBackend {
 
   async scanProject({ id, dir, entries }) {
     const markerEntry = entries.find((e) => e.kind === "file" && e.name === MARKER_FILE);
-    const clonearMd = await (await markerEntry.handle.getFile()).text();
+    const markerFile = await markerEntry.handle.getFile();
+    const clonearMd = await markerFile.text();
     const dirs = entries.filter((e) => e.kind === "directory");
     const project = projectFromParts(id, clonearMd, dirs.map((d) => d.name));
     if (project.error) return { id, dir, error: project.error, action: project.action };
     project.dir = dir;
+    project.marker = { handle: markerEntry.handle, lastModified: markerFile.lastModified };
 
     await Promise.all(
       project.columns.map(async (col) => {
@@ -1272,25 +1336,8 @@ class FsBackend {
     if (await fileExists(dest, ticket.fileName)) {
       throw new Error(`${columnId}/${ticket.fileName} already exists.`);
     }
-    // FileSystemHandle.move() is Chromium-only and newer for user-visible files;
-    // fall back to copy + delete where it is missing or refused.
-    if (typeof ticket.handle.move === "function") {
-      try {
-        await ticket.handle.move(dest);
-        return { lastModified: (await ticket.handle.getFile()).lastModified };
-      } catch {
-        // The move may have gone through before failing; otherwise fall back.
-        if (!(await fileExists(ticket.dirHandle, ticket.fileName))) {
-          const moved = await dest.getFileHandle(ticket.fileName);
-          return { lastModified: (await moved.getFile()).lastModified };
-        }
-      }
-    }
-    const raw = await (await ticket.handle.getFile()).text();
-    const copy = await dest.getFileHandle(ticket.fileName, { create: true });
-    await writeFile(copy, raw);
-    await ticket.dirHandle.removeEntry(ticket.fileName);
-    return { lastModified: (await copy.getFile()).lastModified };
+    const moved = await moveFile(ticket, dest, ticket.fileName);
+    return { lastModified: (await moved.getFile()).lastModified };
   }
 
   async createTicket(project, columnId, id, raw) {
@@ -1307,12 +1354,33 @@ class FsBackend {
 
   // Make the root folder a project named `name`: clonear.md at the current
   // format version, plus the default column folders.
-  async initProject(name) {
+  async initProject(name, prefix = defaultPrefix(name)) {
     const root = this.root;
     if (await fileExists(root, MARKER_FILE)) throw new Error(`${root.name}/${MARKER_FILE} already exists.`);
-    const md = initClonearMd({ name, prefix: defaultPrefix(name) });
+    const md = initClonearMd({ name, prefix });
     for (const col of DEFAULT_COLUMNS) await root.getDirectoryHandle(col, { create: true });
     await writeFile(await root.getFileHandle(MARKER_FILE, { create: true }), md);
+  }
+
+  // Rewrite name / prefix / labels in a project's clonear.md. `force` writes
+  // over outside changes; the fields are applied to the file as it is now.
+  // A new prefix renames the tickets using the current one first; clonear.md
+  // is written last. Refuses before touching anything if a new name is taken.
+  async writeSettings(project, fields, { force = false } = {}) {
+    const { handle, lastModified } = project.marker;
+    const current = await handle.getFile();
+    if (!force && current.lastModified !== lastModified) throw new ConflictError();
+    const renames = "prefix" in fields ? prefixRenames(project, fields.prefix) : [];
+    const taken = new Set(project.columns.flatMap((c) => c.tickets.map((t) => t.id)));
+    for (const { ticket, id } of renames) {
+      if (taken.has(id) || (await fileExists(ticket.dirHandle, `${id}.md`))) throw new Error(`${id} already exists.`);
+    }
+    for (const { ticket, id } of renames) {
+      await moveFile(ticket, ticket.dirHandle, `${id}.md`);
+      this.cache.delete(ticket.path);
+    }
+    await writeFile(handle, updateClonearMd(await current.text(), fields));
+    return { renamed: renames.length };
   }
 
   // Rewrite a project's clonear.md and tickets to FORMAT_VERSION. clonear.md
@@ -1430,6 +1498,10 @@ class ReadOnlyBackend extends FsBackend {
     throw readOnlyError();
   }
 
+  async writeSettings() {
+    throw readOnlyError();
+  }
+
   async migrateProject() {
     throw readOnlyError();
   }
@@ -1441,6 +1513,27 @@ class ReadOnlyBackend extends FsBackend {
 }
 
 const readOnlyError = () => new Error("This board is read-only in this browser.");
+
+// Move a ticket's file to `dest` as `fileName` (another column, or a new
+// name); returns the new file handle. FileSystemHandle.move() is
+// Chromium-only and newer for user-visible files; fall back to copy + delete
+// where it is missing or refused.
+async function moveFile(ticket, dest, fileName) {
+  if (typeof ticket.handle.move === "function") {
+    try {
+      await ticket.handle.move(dest, fileName);
+      return ticket.handle;
+    } catch {
+      // The move may have gone through before failing; otherwise fall back.
+      if (!(await fileExists(ticket.dirHandle, ticket.fileName))) return dest.getFileHandle(fileName);
+    }
+  }
+  const raw = await (await ticket.handle.getFile()).text();
+  const copy = await dest.getFileHandle(fileName, { create: true });
+  await writeFile(copy, raw);
+  await ticket.dirHandle.removeEntry(ticket.fileName);
+  return copy;
+}
 
 async function writeFile(handle, text) {
   const writable = await handle.createWritable();
@@ -1510,7 +1603,7 @@ const loadRecentFolders = () =>
 const loadHandle = () => withStore("readonly", (s) => s.get(handleKey())).catch(() => null);
 const forgetHandle = () => withStore("readwrite", (s) => s.delete(handleKey()));
 
-return { MARKER_FILE, SIZES, CONTAINER_DIRS, ConflictError, titleize, ticketFromText, nextTicketId, defaultPrefix, projectFromParts, fsSupported, FsBackend, directoryFromFiles, ReadOnlyBackend, saveHandle, loadRecentFolders, loadHandle, forgetHandle };
+return { MARKER_FILE, SIZES, CONTAINER_DIRS, ConflictError, titleize, ticketFromText, nextTicketId, currentPrefix, prefixRenames, defaultPrefix, normalizePrefix, updateClonearMd, projectFromParts, fsSupported, FsBackend, directoryFromFiles, ReadOnlyBackend, saveHandle, loadRecentFolders, loadHandle, forgetHandle };
 })();
 
 // ---- app/app.js ----
@@ -1518,7 +1611,7 @@ return { MARKER_FILE, SIZES, CONTAINER_DIRS, ConflictError, titleize, ticketFrom
 const { renderMarkdown, updateTicketText } = __mod_lib_frontmatter;
 const { FORMAT_VERSION } = __mod_lib_format;
 const { scoreTicket } = __mod_lib_search;
-const { CONTAINER_DIRS, ConflictError, FsBackend, ReadOnlyBackend, SIZES, directoryFromFiles, fsSupported, loadHandle, loadRecentFolders, nextTicketId, saveHandle, ticketFromText, titleize } = __mod_lib_store;
+const { CONTAINER_DIRS, ConflictError, FsBackend, ReadOnlyBackend, SIZES, defaultPrefix, directoryFromFiles, fsSupported, loadHandle, loadRecentFolders, nextTicketId, normalizePrefix, prefixRenames, saveHandle, ticketFromText, titleize } = __mod_lib_store;
 const PRIORITIES = {
   urgent: { label: "Urgent", cls: "prio-urgent" },
   high: { label: "High", cls: "prio-high" },
@@ -1551,9 +1644,8 @@ const els = {
   search: document.getElementById("search"),
   sync: document.getElementById("sync-status"),
   newTicket: document.getElementById("new-ticket"),
+  settings: document.getElementById("project-settings"),
   notices: document.getElementById("notices"),
-  openFolder: document.getElementById("open-folder"),
-  createProject: document.getElementById("create-project"),
   folderInput: document.getElementById("folder-input"),
   drawer: document.getElementById("drawer"),
   drawerOverlay: document.getElementById("drawer-overlay"),
@@ -1570,9 +1662,8 @@ boot();
 async function boot() {
   els.select.addEventListener("change", onSelectChange);
   els.newTicket.addEventListener("click", () => openCreate(state.projectId));
-  els.openFolder.addEventListener("click", pickFolder);
   els.folderInput.addEventListener("change", openPickedFiles);
-  els.createProject.addEventListener("click", createProject);
+  els.settings.addEventListener("click", () => openSettings(state.projectId));
   els.search.addEventListener("input", () => {
     state.query = els.search.value;
     renderBoard();
@@ -1598,7 +1689,6 @@ async function boot() {
   window.addEventListener("beforeunload", (e) => {
     if (state.drawer && state.drawer.dirty) e.preventDefault();
   });
-  els.createProject.hidden = !fsSupported;
 
   const stored = fsSupported ? await loadHandle() : null;
   if (stored) {
@@ -1641,9 +1731,13 @@ async function createProject() {
   const suggested = CONTAINER_DIRS.includes(handle.name) ? "" : titleize(handle.name);
   const name = (prompt(`Name of the project in “${handle.name}”:`, suggested) || "").trim();
   if (!name) return;
+  const typed = prompt(`Ticket id prefix for “${name}” (letters only, e.g. ${defaultPrefix(name)}-1):`, defaultPrefix(name));
+  if (typed === null) return;
+  const prefix = normalizePrefix(typed);
+  if (!prefix) return toast("The prefix can only contain letters.", "error");
   const backend = new FsBackend(handle);
   try {
-    await backend.initProject(name);
+    await backend.initProject(name, prefix);
     toast(`Created ${handle.name}/clonear.md (version ${FORMAT_VERSION}).`);
   } catch (err) {
     toast(`Could not create the project: ${err.message}`, "error");
@@ -1721,7 +1815,10 @@ function applyBoard(board) {
     board.projects.map((p) => [
       p.id,
       p.name,
+      p.prefix,
+      p.labels,
       p.version,
+      p.marker && p.marker.lastModified,
       p.columns.map((c) => [c.id, c.tickets.map((t) => [t.id, t.lastModified, t.bytes, t.size, t.raw.length])]),
     ]),
   ]);
@@ -1799,6 +1896,7 @@ function renderTopbar() {
   const hasBoard = !!(backend && state.board && state.board.projects.length);
   els.select.hidden = !hasBoard;
   els.newTicket.hidden = !hasBoard || readOnly();
+  els.settings.hidden = !hasBoard;
   els.count.hidden = !hasBoard;
   els.searchBox.hidden = !hasBoard;
 
@@ -1857,7 +1955,7 @@ function renderStart({ stored = null, reason = "", empty = false }) {
       <p>Each project folder needs a <code>clonear.md</code> next to its <code>todo/</code>,
       <code>done/</code>… subfolders. Pick a project folder, a folder of projects, or a
       folder containing <code>tickets/</code> or <code>projects/</code>. To start a new
-      project, use <strong>Create</strong>${fsSupported ? "" : " in Chrome, Edge or Arc"}.</p>
+      project, use <strong>Create a project</strong>${fsSupported ? "" : " in Chrome, Edge or Arc"}.</p>
       ${
         rejected.length
           ? `<ul class="start-rejected">${rejected
@@ -2185,7 +2283,8 @@ function buildDrawer() {
       <label><span>Priority</span><select id="f-priority">${prioOptions}</select></label>
       <label><span>Size</span><select id="f-size">${sizeOptions}</select></label>
       <label id="f-assignee-row"><span>Assignee</span><input id="f-assignee" placeholder="—" /></label>
-      <label><span>Labels</span><input id="f-labels" placeholder="bug, auth" /></label>
+      <label><span>Labels</span><input id="f-labels" placeholder="bug, auth" list="f-labels-list" autocomplete="off" /></label>
+      <datalist id="f-labels-list"></datalist>
       <label id="f-created-row"><span>Created</span><span id="f-created" class="dt-static"></span></label>
     </div>
     <div class="dt-tabs" ${readOnly() ? "hidden" : ""}>
@@ -2223,6 +2322,7 @@ function buildDrawer() {
   for (const id of ["f-title", "f-assignee", "f-labels", "f-body"]) {
     $(id).addEventListener("input", onFieldInput);
   }
+  $("f-labels").addEventListener("input", suggestLabels);
   $("f-priority").addEventListener("change", onFieldInput);
   $("f-size").addEventListener("change", onFieldInput);
   $("f-column").addEventListener("change", (e) => {
@@ -2295,6 +2395,7 @@ function fillDrawer(t) {
   // Hide unset fields on existing tickets; a new ticket still offers Assignee.
   $("f-assignee-row").hidden = !t.assignee && d.mode !== "create";
   $("f-labels").value = t.labels.join(", ");
+  suggestLabels();
   $("f-created").textContent = t.created;
   $("f-created-row").hidden = !t.created;
   $("f-column").value = t.column;
@@ -2306,6 +2407,21 @@ function fillDrawer(t) {
   }
   autoGrow($("f-title"));
   setBodyMode(d.bodyMode);
+}
+
+// The input holds a comma-separated list, so each suggestion is the labels
+// typed so far plus one project label not used yet.
+function suggestLabels() {
+  const d = state.drawer;
+  const project = state.board.projects.find((p) => p.id === d.projectId);
+  const list = document.getElementById("f-labels-list");
+  if (!project || !list || readOnly()) return;
+  const done = document.getElementById("f-labels").value.split(",").slice(0, -1).map((l) => l.trim()).filter(Boolean);
+  const head = done.length ? `${done.join(", ")}, ` : "";
+  list.innerHTML = project.labels
+    .filter((l) => !done.includes(l))
+    .map((l) => `<option value="${escapeAttr(head + l)}"></option>`)
+    .join("");
 }
 
 function setBodyMode(mode, { focus = false } = {}) {
@@ -2461,6 +2577,7 @@ async function deleteFromDrawer() {
 // Called after every rescan: reflect outside changes in the open ticket.
 function syncDrawerWithDisk() {
   const d = state.drawer;
+  if (d && d.mode === "settings") return syncSettingsWithDisk();
   if (!d || d.mode !== "edit") return;
   const ticket = findTicket(d.projectId, d.ticketId);
   if (!ticket) {
@@ -2512,6 +2629,188 @@ function showConflictBanner() {
   banner.querySelector('[data-banner="overwrite"]').addEventListener("click", () => saveNow({ force: true }));
 }
 
+// --------------------------------------------------------------------------- //
+// Project settings: name, prefix and labels in clonear.md, plus opening or
+// creating another project. Read-only boards only get the latter.
+// --------------------------------------------------------------------------- //
+function openSettings(projectId) {
+  const project = state.board && state.board.projects.find((p) => p.id === projectId);
+  if (!project) return;
+  if (state.drawer) closeDrawer();
+  if (readOnly()) return openFolderSettings();
+  state.drawer = {
+    mode: "settings",
+    projectId,
+    lastModified: project.marker.lastModified,
+    dirty: false,
+    conflict: false,
+    saving: false,
+  };
+  els.drawerContent.innerHTML = `
+    <div class="dt-bar">
+      <span class="dt-id">Project settings</span>
+      <span class="dt-save" id="dt-save"></span>
+    </div>
+    <div class="dt-banner" id="dt-banner" hidden></div>
+    <div class="dt-meta dt-settings">
+      <label><span>Name</span><input id="s-name" /></label>
+      <label><span>Ticket id prefix</span><input id="s-prefix" /></label>
+      <label class="dt-wide"><span>Labels</span><input id="s-labels" placeholder="bug, ui, perf" /></label>
+    </div>
+    <p class="dt-hint" id="s-prefix-hint"></p>
+    <div class="dt-footer">
+      <span class="dt-path">${escapeHtml(project.id)}/clonear.md</span>
+      <span class="dt-actions">
+        <button type="button" class="btn" data-action="cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" data-action="save">Save</button>
+      </span>
+    </div>
+    ${folderActionsHtml()}
+  `;
+  bindFolderActions();
+  fillSettings(project);
+  document.getElementById("s-prefix").addEventListener("input", () => showPrefixRenames(project));
+  for (const id of ["s-name", "s-prefix", "s-labels"]) {
+    document.getElementById(id).addEventListener("input", () => {
+      state.drawer.dirty = true;
+      setSaveStatus("Unsaved");
+    });
+  }
+  els.drawerContent.querySelector('[data-action="cancel"]').addEventListener("click", closeDrawer);
+  els.drawerContent.querySelector('[data-action="save"]').addEventListener("click", () => saveSettings());
+  els.drawer.hidden = false;
+  els.drawerOverlay.hidden = false;
+  els.drawer.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => els.drawer.classList.add("open"));
+  document.getElementById("s-name").focus();
+}
+
+// Read-only board: nothing to edit, only another folder to open.
+function openFolderSettings() {
+  state.drawer = { mode: "folders" };
+  els.drawerContent.innerHTML = `
+    <div class="dt-bar"><span class="dt-id">Settings</span></div>
+    ${folderActionsHtml()}
+  `;
+  bindFolderActions();
+  els.drawer.hidden = false;
+  els.drawerOverlay.hidden = false;
+  els.drawer.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => els.drawer.classList.add("open"));
+}
+
+function folderActionsHtml() {
+  return `
+    <section class="dt-section">
+      <h3>Projects</h3>
+      <p>Open another folder of tickets${fsSupported ? ", or make a folder a new Clonear project" : ""}.</p>
+      <div class="dt-section-actions">
+        <button type="button" class="btn" data-action="open-folder">Open folder</button>
+        ${fsSupported ? `<button type="button" class="btn" data-action="create-project">Create a project</button>` : ""}
+      </div>
+    </section>`;
+}
+
+function bindFolderActions() {
+  els.drawerContent.querySelector('[data-action="open-folder"]').addEventListener("click", pickFolder);
+  const create = els.drawerContent.querySelector('[data-action="create-project"]');
+  if (create) create.addEventListener("click", createProject);
+}
+
+function fillSettings(project) {
+  document.getElementById("s-name").value = project.name;
+  document.getElementById("s-prefix").value = project.prefix;
+  document.getElementById("s-labels").value = project.labels.join(", ");
+  showPrefixRenames(project);
+}
+
+// Say which ticket files a new prefix will rename, before saving.
+function showPrefixRenames(project) {
+  const hint = document.getElementById("s-prefix-hint");
+  const renames = prefixRenames(project, normalizePrefix(document.getElementById("s-prefix").value));
+  hint.hidden = !renames.length;
+  if (!renames.length) return;
+  const [first] = renames;
+  const n = renames.length;
+  hint.textContent = `Saving renames ${n} ticket${n === 1 ? "" : "s"}: ${first.ticket.id} → ${first.id}${n > 1 ? ", …" : ""}`;
+}
+
+async function saveSettings({ force = false } = {}) {
+  const d = state.drawer;
+  if (!d || d.mode !== "settings" || d.saving || (d.conflict && !force)) return;
+  const project = state.board.projects.find((p) => p.id === d.projectId);
+  if (!project) return;
+  const typedPrefix = document.getElementById("s-prefix").value.trim();
+  const prefix = normalizePrefix(typedPrefix);
+  if (typedPrefix && !prefix) {
+    document.getElementById("s-prefix").focus();
+    toast("The prefix can only contain letters.", "error");
+    return;
+  }
+  const fields = {
+    name: document.getElementById("s-name").value.trim(),
+    prefix,
+    labels: [...new Set(document.getElementById("s-labels").value.split(",").map((l) => l.trim()).filter(Boolean))],
+  };
+  d.saving = true;
+  setSaveStatus("Saving…");
+  let renamed = 0;
+  try {
+    ({ renamed } = await state.backend.writeSettings({ ...project, marker: { ...project.marker, lastModified: d.lastModified } }, fields, {
+      force,
+    }));
+  } catch (err) {
+    if (d !== state.drawer) return;
+    setSaveStatus("Not saved");
+    if (err instanceof ConflictError) {
+      d.conflict = true;
+      showSettingsConflict();
+    } else {
+      toast(`Could not save the settings: ${err.message}`, "error");
+    }
+    return;
+  } finally {
+    d.saving = false;
+  }
+  d.dirty = false;
+  if (d === state.drawer) closeDrawer();
+  toast(`Saved ${project.id}/clonear.md${renamed ? ` and renamed ${renamed} ticket${renamed === 1 ? "" : "s"}` : ""}.`);
+  refresh();
+}
+
+function syncSettingsWithDisk() {
+  const d = state.drawer;
+  const project = state.board.projects.find((p) => p.id === d.projectId);
+  if (!project || d.saving || project.marker.lastModified === d.lastModified) return;
+  if (d.dirty) {
+    d.conflict = true;
+    setSaveStatus("Not saved");
+    return showSettingsConflict();
+  }
+  d.lastModified = project.marker.lastModified;
+  fillSettings(project);
+}
+
+function showSettingsConflict() {
+  showBanner(`
+    <span>clonear.md changed on disk while you were editing.</span>
+    <span class="dt-banner-actions">
+      <button type="button" class="btn" data-banner="reload">Load disk version</button>
+      <button type="button" class="btn btn-primary" data-banner="overwrite">Apply my changes</button>
+    </span>`);
+  const banner = document.getElementById("dt-banner");
+  banner.querySelector('[data-banner="reload"]').addEventListener("click", () => {
+    const d = state.drawer;
+    const project = state.board.projects.find((p) => p.id === d.projectId);
+    if (!project) return;
+    Object.assign(d, { dirty: false, conflict: false, lastModified: project.marker.lastModified });
+    showBanner(null);
+    setSaveStatus("");
+    fillSettings(project);
+  });
+  banner.querySelector('[data-banner="overwrite"]').addEventListener("click", () => saveSettings({ force: true }));
+}
+
 function showBanner(html) {
   const banner = document.getElementById("dt-banner");
   if (!banner) return;
@@ -2550,7 +2849,8 @@ function onGlobalKey(e) {
     closeDrawer();
   } else if ((e.metaKey || e.ctrlKey) && e.key === "s" && d) {
     e.preventDefault();
-    saveNow();
+    if (d.mode === "settings") saveSettings();
+    else saveNow();
   } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && d && d.mode === "create") {
     e.preventDefault();
     createFromDrawer();

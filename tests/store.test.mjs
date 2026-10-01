@@ -2,7 +2,16 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { FORMAT_VERSION, initClonearMd } from "../app/lib/format.js";
-import { ReadOnlyBackend, directoryFromFiles, projectFromParts, ticketFromText } from "../app/lib/store.js";
+import {
+  ReadOnlyBackend,
+  directoryFromFiles,
+  nextTicketId,
+  normalizePrefix,
+  prefixRenames,
+  projectFromParts,
+  ticketFromText,
+  updateClonearMd,
+} from "../app/lib/store.js";
 
 const md = (version) => `---\nversion: ${version}\n---\n`;
 
@@ -101,4 +110,51 @@ test("a picked folder is scanned like an opened one, read-only", async () => {
 
 test("picking an empty folder gives no tree", () => {
   assert.equal(directoryFromFiles([]), null);
+});
+
+test("reads prefix and labels from clonear.md", () => {
+  const p = projectFromParts("tickets", "---\nversion: 1.1.0\nprefix: clo\nlabels: [bug, ui]\n---\n", []);
+  assert.equal(p.prefix, "CLO");
+  assert.deepEqual(p.labels, ["bug", "ui"]);
+  const bare = projectFromParts("tickets", "---\nversion: 1\nprefix: C-1\n---\n", []);
+  assert.equal(bare.prefix, "");
+  assert.deepEqual(bare.labels, []);
+});
+
+test("init writes the prefix", () => {
+  const p = projectFromParts("tickets", initClonearMd({ name: "Clonear", prefix: "CLO" }), []);
+  assert.equal(p.prefix, "CLO");
+  assert.deepEqual(p.labels, []);
+});
+
+const withTickets = (prefix, ids) => ({ id: "tickets", prefix, columns: [{ tickets: ids.map((id) => ({ id })) }] });
+
+test("next ticket id prefers the prefix from clonear.md", () => {
+  assert.equal(nextTicketId(withTickets("", [])), "TIC-1");
+  assert.equal(nextTicketId(withTickets("", ["OLD-4"])), "OLD-5");
+  assert.equal(nextTicketId(withTickets("CLO", [])), "CLO-1");
+  assert.equal(nextTicketId(withTickets("CLO", ["CLO-6", "OLD-9"])), "CLO-7");
+});
+
+test("normalizePrefix keeps letters only, uppercased", () => {
+  assert.equal(normalizePrefix(" clo "), "CLO");
+  assert.equal(normalizePrefix("C-1"), "");
+  assert.equal(normalizePrefix(""), "");
+});
+
+test("updateClonearMd rewrites settings, keeps the rest, and stamps older versions", () => {
+  const raw = "---\nversion: 1.0.0\nname: Old\ncolumns: [todo, done]\nswimlanes: [a]\n---\n\nNotes.\n";
+  const out = updateClonearMd(raw, { name: "New", prefix: "NEW", labels: ["bug"] });
+  assert.equal(out, `---\nversion: ${FORMAT_VERSION}\nname: New\ncolumns: [todo, done]\nswimlanes: [a]\nprefix: NEW\nlabels: [bug]\n---\n\nNotes.\n`);
+  // A newer minor version is kept, and an empty prefix is removed.
+  const newer = updateClonearMd("---\nversion: 1.9.0\nprefix: X\n---\n", { prefix: "" });
+  assert.equal(newer, "---\nversion: 1.9.0\n---\n");
+});
+
+test("a new prefix renames the tickets using the current one", () => {
+  const ids = (renames) => renames.map((r) => `${r.ticket.id}>${r.id}`);
+  assert.deepEqual(ids(prefixRenames(withTickets("", ["TIC-1", "TIC-3", "OLD-2"]), "CLO")), ["TIC-1>CLO-1", "TIC-3>CLO-3"]);
+  assert.deepEqual(ids(prefixRenames(withTickets("CLO", ["CLO-1", "NOTE"]), "APP")), ["CLO-1>APP-1"]);
+  assert.deepEqual(prefixRenames(withTickets("CLO", ["CLO-1"]), "CLO"), []);
+  assert.deepEqual(prefixRenames(withTickets("CLO", ["CLO-1"]), ""), []);
 });

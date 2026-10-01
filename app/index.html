@@ -37,7 +37,6 @@
         <span class="sr-only">Project</span>
         <select id="project-select" aria-label="Select project" hidden></select>
       </label>
-      <button id="new-ticket" class="btn btn-primary" title="New ticket (C)" hidden>+ New ticket</button>
       <label class="search" hidden id="search-box">
         <span class="sr-only">Search tickets</span>
         <input id="search" type="search" placeholder="Search tickets…  /" autocomplete="off" spellcheck="false" />
@@ -45,8 +44,8 @@
       <div class="topbar-spacer"></div>
       <span id="sync-status" class="sync-status" hidden></span>
       <span id="ticket-count" class="ticket-count" hidden></span>
-      <button id="open-folder" class="btn" title="Open a folder with a clonear.md">Open</button>
-      <button id="create-project" class="btn" title="Pick a folder and make it a Clonear project">Create</button>
+      <button id="new-ticket" class="btn btn-primary" title="New ticket (C)" hidden>+ New ticket</button>
+      <button id="project-settings" class="btn" title="Project settings, open or create a project" hidden>Settings</button>
       <!-- Folder picker for browsers without the File System Access API (read-only board). -->
       <input id="folder-input" type="file" webkitdirectory multiple hidden />
     </header>

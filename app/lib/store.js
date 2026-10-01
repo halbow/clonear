@@ -4,7 +4,7 @@
 // of a folder picked with <input type="file" webkitdirectory>.
 // FsBackend exposes this shape to the UI:
 //
-//   scan()                         -> { projects: [{ id, name, version, newer, columns: [{ id, label, tickets }] }],
+//   scan()                         -> { projects: [{ id, name, prefix, labels, version, newer, columns: [{ id, label, tickets }] }],
 //                                       rejected: [{ id, reason, action, dir }] }
 //                                     action: "migrate" | null
 //   readText(ticket)               -> the file's current content
@@ -12,7 +12,9 @@
 //   moveTicket(ticket, columnId)   -> { lastModified }
 //   createTicket(project, columnId, id, raw)
 //   deleteTicket(ticket)
-//   initProject(name)              -> makes the root a project: clonear.md + column folders
+//   initProject(name, prefix)      -> makes the root a project: clonear.md + column folders
+//   writeSettings(project, fields, opts) -> rewrites name / prefix / labels in clonear.md, and renames the
+//                                     tickets to a new prefix -> { renamed }   (throws ConflictError)
 //   migrateProject(dir)            -> rewrites clonear.md and its tickets to FORMAT_VERSION
 //   watch(onChange)                -> { mode, stop }       mode: "live" | "polling" | "readonly"
 //   readonly                       -> true when every write above throws
@@ -22,8 +24,16 @@
 // project, pins the format version, sets the display name and column order, and
 // holds a ticket template for people and agents. Folders without it are refused.
 
-import { parseFrontmatter } from "./frontmatter.js";
-import { DEFAULT_COLUMNS, FORMAT_VERSION, checkVersion, initClonearMd, migrate } from "./format.js";
+import { parseFrontmatter, updateTicketText } from "./frontmatter.js";
+import {
+  DEFAULT_COLUMNS,
+  FORMAT_VERSION,
+  checkVersion,
+  compareVersions,
+  initClonearMd,
+  migrate,
+  parseVersion,
+} from "./format.js";
 
 export const MARKER_FILE = "clonear.md";
 
@@ -81,18 +91,60 @@ function sortTickets(tickets) {
   );
 }
 
-// Next free id in a project, e.g. WEB-6. Reuses the prefix already in use.
+// Next free id in a project, e.g. WEB-6. Uses the prefix from clonear.md,
+// else the one already in use, else one made from the folder name.
 export function nextTicketId(project) {
-  const ids = project.columns.flatMap((c) => c.tickets.map((t) => t.id));
-  const parsed = ids.map((id) => id.match(/^([A-Za-z]+)-(\d+)$/)).filter(Boolean);
-  const prefix = (parsed[0] && parsed[0][1]) || defaultPrefix(project.id);
-  const max = Math.max(0, ...parsed.filter((m) => m[1] === prefix).map((m) => Number(m[2])));
+  const prefix = currentPrefix(project);
+  const max = Math.max(0, ...parsedIds(project).filter((m) => m.prefix === prefix).map((m) => m.number));
   return `${prefix}-${max + 1}`;
+}
+
+// The prefix new tickets get: clonear.md's, else the one in use, else one
+// made from the folder name.
+export function currentPrefix(project) {
+  const parsed = parsedIds(project);
+  return project.prefix || (parsed[0] && parsed[0].prefix) || defaultPrefix(project.id);
+}
+
+// Tickets whose id is <prefix>-<number>, e.g. { ticket, prefix: "WEB", number: 6 }.
+function parsedIds(project) {
+  return project.columns.flatMap((c) =>
+    c.tickets.flatMap((ticket) => {
+      const m = ticket.id.match(/^([A-Za-z]+)-(\d+)$/);
+      return m ? [{ ticket, prefix: m[1], number: Number(m[2]) }] : [];
+    })
+  );
+}
+
+// Changing the prefix renames the tickets that use the current one, e.g.
+// TIC-3 -> CLO-3: [{ ticket, id }]. Tickets with another prefix are left alone.
+export function prefixRenames(project, prefix) {
+  const from = currentPrefix(project);
+  if (!prefix || prefix === from) return [];
+  return parsedIds(project)
+    .filter((m) => m.prefix === from)
+    .map((m) => ({ ticket: m.ticket, id: `${prefix}-${m.number}` }));
 }
 
 // Ticket id prefix for a project without tickets yet, e.g. web-app -> WEB.
 export function defaultPrefix(projectId) {
   return projectId.toUpperCase().replace(/[^A-Z]/g, "").slice(0, 3) || "TIX";
+}
+
+// A ticket id prefix as typed by someone, e.g. " clo " -> "CLO". "" when it
+// isn't letters only.
+export function normalizePrefix(value) {
+  const prefix = String(value ?? "").trim().toUpperCase();
+  return /^[A-Z]+$/.test(prefix) ? prefix : "";
+}
+
+// clonear.md with its name / prefix / labels replaced by `fields`. Stamps the
+// current format version on older files, since prefix and labels need it.
+export function updateClonearMd(raw, fields) {
+  const { data, body } = parseFrontmatter(raw);
+  const version = parseVersion(data.version);
+  const stamp = !version || compareVersions(version, parseVersion(FORMAT_VERSION)) < 0;
+  return updateTicketText(raw, stamp ? { version: FORMAT_VERSION, ...fields } : fields, body);
 }
 
 // Build a project from its clonear.md and column folder names. Returns
@@ -114,11 +166,22 @@ export function projectFromParts(id, clonearMd, dirNames) {
   }
   const newer = checkVersion(version) === "newer";
   const name = typeof data.name === "string" && data.name ? data.name : titleize(id);
+  const prefix = normalizePrefix(typeof data.prefix === "string" ? data.prefix : "");
+  let labels = data.labels || [];
+  if (!Array.isArray(labels)) labels = [labels];
   const columns =
     Array.isArray(data.columns) && data.columns.length ? data.columns.filter(Boolean) : [...DEFAULT_COLUMNS];
   // Include every column folder that exists on disk, even if clonear.md omits it.
   for (const d of dirNames) if (!columns.includes(d)) columns.push(d);
-  return { id, name, version, newer, columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })) };
+  return {
+    id,
+    name,
+    prefix,
+    labels: labels.map(String).filter(Boolean),
+    version,
+    newer,
+    columns: columns.map((c) => ({ id: c, label: titleize(c), tickets: [] })),
+  };
 }
 
 // --------------------------------------------------------------------------- //
@@ -203,11 +266,13 @@ export class FsBackend {
 
   async scanProject({ id, dir, entries }) {
     const markerEntry = entries.find((e) => e.kind === "file" && e.name === MARKER_FILE);
-    const clonearMd = await (await markerEntry.handle.getFile()).text();
+    const markerFile = await markerEntry.handle.getFile();
+    const clonearMd = await markerFile.text();
     const dirs = entries.filter((e) => e.kind === "directory");
     const project = projectFromParts(id, clonearMd, dirs.map((d) => d.name));
     if (project.error) return { id, dir, error: project.error, action: project.action };
     project.dir = dir;
+    project.marker = { handle: markerEntry.handle, lastModified: markerFile.lastModified };
 
     await Promise.all(
       project.columns.map(async (col) => {
@@ -261,25 +326,8 @@ export class FsBackend {
     if (await fileExists(dest, ticket.fileName)) {
       throw new Error(`${columnId}/${ticket.fileName} already exists.`);
     }
-    // FileSystemHandle.move() is Chromium-only and newer for user-visible files;
-    // fall back to copy + delete where it is missing or refused.
-    if (typeof ticket.handle.move === "function") {
-      try {
-        await ticket.handle.move(dest);
-        return { lastModified: (await ticket.handle.getFile()).lastModified };
-      } catch {
-        // The move may have gone through before failing; otherwise fall back.
-        if (!(await fileExists(ticket.dirHandle, ticket.fileName))) {
-          const moved = await dest.getFileHandle(ticket.fileName);
-          return { lastModified: (await moved.getFile()).lastModified };
-        }
-      }
-    }
-    const raw = await (await ticket.handle.getFile()).text();
-    const copy = await dest.getFileHandle(ticket.fileName, { create: true });
-    await writeFile(copy, raw);
-    await ticket.dirHandle.removeEntry(ticket.fileName);
-    return { lastModified: (await copy.getFile()).lastModified };
+    const moved = await moveFile(ticket, dest, ticket.fileName);
+    return { lastModified: (await moved.getFile()).lastModified };
   }
 
   async createTicket(project, columnId, id, raw) {
@@ -296,12 +344,33 @@ export class FsBackend {
 
   // Make the root folder a project named `name`: clonear.md at the current
   // format version, plus the default column folders.
-  async initProject(name) {
+  async initProject(name, prefix = defaultPrefix(name)) {
     const root = this.root;
     if (await fileExists(root, MARKER_FILE)) throw new Error(`${root.name}/${MARKER_FILE} already exists.`);
-    const md = initClonearMd({ name, prefix: defaultPrefix(name) });
+    const md = initClonearMd({ name, prefix });
     for (const col of DEFAULT_COLUMNS) await root.getDirectoryHandle(col, { create: true });
     await writeFile(await root.getFileHandle(MARKER_FILE, { create: true }), md);
+  }
+
+  // Rewrite name / prefix / labels in a project's clonear.md. `force` writes
+  // over outside changes; the fields are applied to the file as it is now.
+  // A new prefix renames the tickets using the current one first; clonear.md
+  // is written last. Refuses before touching anything if a new name is taken.
+  async writeSettings(project, fields, { force = false } = {}) {
+    const { handle, lastModified } = project.marker;
+    const current = await handle.getFile();
+    if (!force && current.lastModified !== lastModified) throw new ConflictError();
+    const renames = "prefix" in fields ? prefixRenames(project, fields.prefix) : [];
+    const taken = new Set(project.columns.flatMap((c) => c.tickets.map((t) => t.id)));
+    for (const { ticket, id } of renames) {
+      if (taken.has(id) || (await fileExists(ticket.dirHandle, `${id}.md`))) throw new Error(`${id} already exists.`);
+    }
+    for (const { ticket, id } of renames) {
+      await moveFile(ticket, ticket.dirHandle, `${id}.md`);
+      this.cache.delete(ticket.path);
+    }
+    await writeFile(handle, updateClonearMd(await current.text(), fields));
+    return { renamed: renames.length };
   }
 
   // Rewrite a project's clonear.md and tickets to FORMAT_VERSION. clonear.md
@@ -419,6 +488,10 @@ export class ReadOnlyBackend extends FsBackend {
     throw readOnlyError();
   }
 
+  async writeSettings() {
+    throw readOnlyError();
+  }
+
   async migrateProject() {
     throw readOnlyError();
   }
@@ -430,6 +503,27 @@ export class ReadOnlyBackend extends FsBackend {
 }
 
 const readOnlyError = () => new Error("This board is read-only in this browser.");
+
+// Move a ticket's file to `dest` as `fileName` (another column, or a new
+// name); returns the new file handle. FileSystemHandle.move() is
+// Chromium-only and newer for user-visible files; fall back to copy + delete
+// where it is missing or refused.
+async function moveFile(ticket, dest, fileName) {
+  if (typeof ticket.handle.move === "function") {
+    try {
+      await ticket.handle.move(dest, fileName);
+      return ticket.handle;
+    } catch {
+      // The move may have gone through before failing; otherwise fall back.
+      if (!(await fileExists(ticket.dirHandle, ticket.fileName))) return dest.getFileHandle(fileName);
+    }
+  }
+  const raw = await (await ticket.handle.getFile()).text();
+  const copy = await dest.getFileHandle(fileName, { create: true });
+  await writeFile(copy, raw);
+  await ticket.dirHandle.removeEntry(ticket.fileName);
+  return copy;
+}
 
 async function writeFile(handle, text) {
   const writable = await handle.createWritable();

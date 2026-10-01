@@ -13,7 +13,7 @@
 
 import { parseFrontmatter, updateTicketText } from "./frontmatter.js";
 
-export const FORMAT_VERSION = "1.0.0";
+export const FORMAT_VERSION = "1.1.0";
 export const DEFAULT_COLUMNS = ["todo", "in-progress", "in-qa", "done"];
 
 // { to: "2.0.0", project(md) -> md, ticket(raw) -> raw }, oldest first.
@@ -75,19 +75,22 @@ export function migrate({ clonearMd, tickets }, { migrations = MIGRATIONS, targe
   return { clonearMd: md, tickets: changed };
 }
 
-// The clonear.md `init` writes: current version, name, columns, and the
-// ticket template people and agents follow.
-export function initClonearMd({ name, prefix, columns = DEFAULT_COLUMNS }) {
+// The clonear.md `init` writes: current version, name, prefix, columns,
+// labels, and the ticket template people and agents follow.
+export function initClonearMd({ name, prefix, columns = DEFAULT_COLUMNS, labels = [] }) {
   return `---
 version: ${FORMAT_VERSION}
 name: ${name}
+prefix: ${prefix}
 columns: [${columns.join(", ")}]
+labels: [${labels.join(", ")}]
 ---
 
 This file marks the folder as a Clonear project; the board refuses folders
 without it. \`version\` is the clonear.md format version (semver), \`name\` is
-the display name, and \`columns\` is the column order (each column is a
-subfolder).
+the display name, \`prefix\` is the ticket id prefix, \`columns\` is the
+column order (each column is a subfolder), and \`labels\` are the project's
+labels, suggested when editing a ticket.
 
 ## Tickets
 
@@ -105,7 +108,7 @@ title: Fix login redirect loop   # required, one line
 assignee: dave                   # free text, optional
 priority: medium                 # urgent | high | medium | low (default: low)
 size: M                          # S | M | L (t-shirt estimate)
-labels: [bug, auth]              # list of free-text tags
+labels: [bug, auth]              # free-text tags; prefer the project's labels
 created: 2026-09-30              # YYYY-MM-DD
 ---
 

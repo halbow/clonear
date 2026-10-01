@@ -7,11 +7,14 @@ import {
   FsBackend,
   ReadOnlyBackend,
   SIZES,
+  defaultPrefix,
   directoryFromFiles,
   fsSupported,
   loadHandle,
   loadRecentFolders,
   nextTicketId,
+  normalizePrefix,
+  prefixRenames,
   saveHandle,
   ticketFromText,
   titleize,
@@ -49,9 +52,8 @@ const els = {
   search: document.getElementById("search"),
   sync: document.getElementById("sync-status"),
   newTicket: document.getElementById("new-ticket"),
+  settings: document.getElementById("project-settings"),
   notices: document.getElementById("notices"),
-  openFolder: document.getElementById("open-folder"),
-  createProject: document.getElementById("create-project"),
   folderInput: document.getElementById("folder-input"),
   drawer: document.getElementById("drawer"),
   drawerOverlay: document.getElementById("drawer-overlay"),
@@ -68,9 +70,8 @@ boot();
 async function boot() {
   els.select.addEventListener("change", onSelectChange);
   els.newTicket.addEventListener("click", () => openCreate(state.projectId));
-  els.openFolder.addEventListener("click", pickFolder);
   els.folderInput.addEventListener("change", openPickedFiles);
-  els.createProject.addEventListener("click", createProject);
+  els.settings.addEventListener("click", () => openSettings(state.projectId));
   els.search.addEventListener("input", () => {
     state.query = els.search.value;
     renderBoard();
@@ -96,7 +97,6 @@ async function boot() {
   window.addEventListener("beforeunload", (e) => {
     if (state.drawer && state.drawer.dirty) e.preventDefault();
   });
-  els.createProject.hidden = !fsSupported;
 
   const stored = fsSupported ? await loadHandle() : null;
   if (stored) {
@@ -139,9 +139,13 @@ async function createProject() {
   const suggested = CONTAINER_DIRS.includes(handle.name) ? "" : titleize(handle.name);
   const name = (prompt(`Name of the project in “${handle.name}”:`, suggested) || "").trim();
   if (!name) return;
+  const typed = prompt(`Ticket id prefix for “${name}” (letters only, e.g. ${defaultPrefix(name)}-1):`, defaultPrefix(name));
+  if (typed === null) return;
+  const prefix = normalizePrefix(typed);
+  if (!prefix) return toast("The prefix can only contain letters.", "error");
   const backend = new FsBackend(handle);
   try {
-    await backend.initProject(name);
+    await backend.initProject(name, prefix);
     toast(`Created ${handle.name}/clonear.md (version ${FORMAT_VERSION}).`);
   } catch (err) {
     toast(`Could not create the project: ${err.message}`, "error");
@@ -219,7 +223,10 @@ function applyBoard(board) {
     board.projects.map((p) => [
       p.id,
       p.name,
+      p.prefix,
+      p.labels,
       p.version,
+      p.marker && p.marker.lastModified,
       p.columns.map((c) => [c.id, c.tickets.map((t) => [t.id, t.lastModified, t.bytes, t.size, t.raw.length])]),
     ]),
   ]);
@@ -297,6 +304,7 @@ function renderTopbar() {
   const hasBoard = !!(backend && state.board && state.board.projects.length);
   els.select.hidden = !hasBoard;
   els.newTicket.hidden = !hasBoard || readOnly();
+  els.settings.hidden = !hasBoard;
   els.count.hidden = !hasBoard;
   els.searchBox.hidden = !hasBoard;
 
@@ -355,7 +363,7 @@ function renderStart({ stored = null, reason = "", empty = false }) {
       <p>Each project folder needs a <code>clonear.md</code> next to its <code>todo/</code>,
       <code>done/</code>… subfolders. Pick a project folder, a folder of projects, or a
       folder containing <code>tickets/</code> or <code>projects/</code>. To start a new
-      project, use <strong>Create</strong>${fsSupported ? "" : " in Chrome, Edge or Arc"}.</p>
+      project, use <strong>Create a project</strong>${fsSupported ? "" : " in Chrome, Edge or Arc"}.</p>
       ${
         rejected.length
           ? `<ul class="start-rejected">${rejected
@@ -683,7 +691,8 @@ function buildDrawer() {
       <label><span>Priority</span><select id="f-priority">${prioOptions}</select></label>
       <label><span>Size</span><select id="f-size">${sizeOptions}</select></label>
       <label id="f-assignee-row"><span>Assignee</span><input id="f-assignee" placeholder="—" /></label>
-      <label><span>Labels</span><input id="f-labels" placeholder="bug, auth" /></label>
+      <label><span>Labels</span><input id="f-labels" placeholder="bug, auth" list="f-labels-list" autocomplete="off" /></label>
+      <datalist id="f-labels-list"></datalist>
       <label id="f-created-row"><span>Created</span><span id="f-created" class="dt-static"></span></label>
     </div>
     <div class="dt-tabs" ${readOnly() ? "hidden" : ""}>
@@ -721,6 +730,7 @@ function buildDrawer() {
   for (const id of ["f-title", "f-assignee", "f-labels", "f-body"]) {
     $(id).addEventListener("input", onFieldInput);
   }
+  $("f-labels").addEventListener("input", suggestLabels);
   $("f-priority").addEventListener("change", onFieldInput);
   $("f-size").addEventListener("change", onFieldInput);
   $("f-column").addEventListener("change", (e) => {
@@ -793,6 +803,7 @@ function fillDrawer(t) {
   // Hide unset fields on existing tickets; a new ticket still offers Assignee.
   $("f-assignee-row").hidden = !t.assignee && d.mode !== "create";
   $("f-labels").value = t.labels.join(", ");
+  suggestLabels();
   $("f-created").textContent = t.created;
   $("f-created-row").hidden = !t.created;
   $("f-column").value = t.column;
@@ -804,6 +815,21 @@ function fillDrawer(t) {
   }
   autoGrow($("f-title"));
   setBodyMode(d.bodyMode);
+}
+
+// The input holds a comma-separated list, so each suggestion is the labels
+// typed so far plus one project label not used yet.
+function suggestLabels() {
+  const d = state.drawer;
+  const project = state.board.projects.find((p) => p.id === d.projectId);
+  const list = document.getElementById("f-labels-list");
+  if (!project || !list || readOnly()) return;
+  const done = document.getElementById("f-labels").value.split(",").slice(0, -1).map((l) => l.trim()).filter(Boolean);
+  const head = done.length ? `${done.join(", ")}, ` : "";
+  list.innerHTML = project.labels
+    .filter((l) => !done.includes(l))
+    .map((l) => `<option value="${escapeAttr(head + l)}"></option>`)
+    .join("");
 }
 
 function setBodyMode(mode, { focus = false } = {}) {
@@ -959,6 +985,7 @@ async function deleteFromDrawer() {
 // Called after every rescan: reflect outside changes in the open ticket.
 function syncDrawerWithDisk() {
   const d = state.drawer;
+  if (d && d.mode === "settings") return syncSettingsWithDisk();
   if (!d || d.mode !== "edit") return;
   const ticket = findTicket(d.projectId, d.ticketId);
   if (!ticket) {
@@ -1010,6 +1037,188 @@ function showConflictBanner() {
   banner.querySelector('[data-banner="overwrite"]').addEventListener("click", () => saveNow({ force: true }));
 }
 
+// --------------------------------------------------------------------------- //
+// Project settings: name, prefix and labels in clonear.md, plus opening or
+// creating another project. Read-only boards only get the latter.
+// --------------------------------------------------------------------------- //
+function openSettings(projectId) {
+  const project = state.board && state.board.projects.find((p) => p.id === projectId);
+  if (!project) return;
+  if (state.drawer) closeDrawer();
+  if (readOnly()) return openFolderSettings();
+  state.drawer = {
+    mode: "settings",
+    projectId,
+    lastModified: project.marker.lastModified,
+    dirty: false,
+    conflict: false,
+    saving: false,
+  };
+  els.drawerContent.innerHTML = `
+    <div class="dt-bar">
+      <span class="dt-id">Project settings</span>
+      <span class="dt-save" id="dt-save"></span>
+    </div>
+    <div class="dt-banner" id="dt-banner" hidden></div>
+    <div class="dt-meta dt-settings">
+      <label><span>Name</span><input id="s-name" /></label>
+      <label><span>Ticket id prefix</span><input id="s-prefix" /></label>
+      <label class="dt-wide"><span>Labels</span><input id="s-labels" placeholder="bug, ui, perf" /></label>
+    </div>
+    <p class="dt-hint" id="s-prefix-hint"></p>
+    <div class="dt-footer">
+      <span class="dt-path">${escapeHtml(project.id)}/clonear.md</span>
+      <span class="dt-actions">
+        <button type="button" class="btn" data-action="cancel">Cancel</button>
+        <button type="button" class="btn btn-primary" data-action="save">Save</button>
+      </span>
+    </div>
+    ${folderActionsHtml()}
+  `;
+  bindFolderActions();
+  fillSettings(project);
+  document.getElementById("s-prefix").addEventListener("input", () => showPrefixRenames(project));
+  for (const id of ["s-name", "s-prefix", "s-labels"]) {
+    document.getElementById(id).addEventListener("input", () => {
+      state.drawer.dirty = true;
+      setSaveStatus("Unsaved");
+    });
+  }
+  els.drawerContent.querySelector('[data-action="cancel"]').addEventListener("click", closeDrawer);
+  els.drawerContent.querySelector('[data-action="save"]').addEventListener("click", () => saveSettings());
+  els.drawer.hidden = false;
+  els.drawerOverlay.hidden = false;
+  els.drawer.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => els.drawer.classList.add("open"));
+  document.getElementById("s-name").focus();
+}
+
+// Read-only board: nothing to edit, only another folder to open.
+function openFolderSettings() {
+  state.drawer = { mode: "folders" };
+  els.drawerContent.innerHTML = `
+    <div class="dt-bar"><span class="dt-id">Settings</span></div>
+    ${folderActionsHtml()}
+  `;
+  bindFolderActions();
+  els.drawer.hidden = false;
+  els.drawerOverlay.hidden = false;
+  els.drawer.setAttribute("aria-hidden", "false");
+  requestAnimationFrame(() => els.drawer.classList.add("open"));
+}
+
+function folderActionsHtml() {
+  return `
+    <section class="dt-section">
+      <h3>Projects</h3>
+      <p>Open another folder of tickets${fsSupported ? ", or make a folder a new Clonear project" : ""}.</p>
+      <div class="dt-section-actions">
+        <button type="button" class="btn" data-action="open-folder">Open folder</button>
+        ${fsSupported ? `<button type="button" class="btn" data-action="create-project">Create a project</button>` : ""}
+      </div>
+    </section>`;
+}
+
+function bindFolderActions() {
+  els.drawerContent.querySelector('[data-action="open-folder"]').addEventListener("click", pickFolder);
+  const create = els.drawerContent.querySelector('[data-action="create-project"]');
+  if (create) create.addEventListener("click", createProject);
+}
+
+function fillSettings(project) {
+  document.getElementById("s-name").value = project.name;
+  document.getElementById("s-prefix").value = project.prefix;
+  document.getElementById("s-labels").value = project.labels.join(", ");
+  showPrefixRenames(project);
+}
+
+// Say which ticket files a new prefix will rename, before saving.
+function showPrefixRenames(project) {
+  const hint = document.getElementById("s-prefix-hint");
+  const renames = prefixRenames(project, normalizePrefix(document.getElementById("s-prefix").value));
+  hint.hidden = !renames.length;
+  if (!renames.length) return;
+  const [first] = renames;
+  const n = renames.length;
+  hint.textContent = `Saving renames ${n} ticket${n === 1 ? "" : "s"}: ${first.ticket.id} → ${first.id}${n > 1 ? ", …" : ""}`;
+}
+
+async function saveSettings({ force = false } = {}) {
+  const d = state.drawer;
+  if (!d || d.mode !== "settings" || d.saving || (d.conflict && !force)) return;
+  const project = state.board.projects.find((p) => p.id === d.projectId);
+  if (!project) return;
+  const typedPrefix = document.getElementById("s-prefix").value.trim();
+  const prefix = normalizePrefix(typedPrefix);
+  if (typedPrefix && !prefix) {
+    document.getElementById("s-prefix").focus();
+    toast("The prefix can only contain letters.", "error");
+    return;
+  }
+  const fields = {
+    name: document.getElementById("s-name").value.trim(),
+    prefix,
+    labels: [...new Set(document.getElementById("s-labels").value.split(",").map((l) => l.trim()).filter(Boolean))],
+  };
+  d.saving = true;
+  setSaveStatus("Saving…");
+  let renamed = 0;
+  try {
+    ({ renamed } = await state.backend.writeSettings({ ...project, marker: { ...project.marker, lastModified: d.lastModified } }, fields, {
+      force,
+    }));
+  } catch (err) {
+    if (d !== state.drawer) return;
+    setSaveStatus("Not saved");
+    if (err instanceof ConflictError) {
+      d.conflict = true;
+      showSettingsConflict();
+    } else {
+      toast(`Could not save the settings: ${err.message}`, "error");
+    }
+    return;
+  } finally {
+    d.saving = false;
+  }
+  d.dirty = false;
+  if (d === state.drawer) closeDrawer();
+  toast(`Saved ${project.id}/clonear.md${renamed ? ` and renamed ${renamed} ticket${renamed === 1 ? "" : "s"}` : ""}.`);
+  refresh();
+}
+
+function syncSettingsWithDisk() {
+  const d = state.drawer;
+  const project = state.board.projects.find((p) => p.id === d.projectId);
+  if (!project || d.saving || project.marker.lastModified === d.lastModified) return;
+  if (d.dirty) {
+    d.conflict = true;
+    setSaveStatus("Not saved");
+    return showSettingsConflict();
+  }
+  d.lastModified = project.marker.lastModified;
+  fillSettings(project);
+}
+
+function showSettingsConflict() {
+  showBanner(`
+    <span>clonear.md changed on disk while you were editing.</span>
+    <span class="dt-banner-actions">
+      <button type="button" class="btn" data-banner="reload">Load disk version</button>
+      <button type="button" class="btn btn-primary" data-banner="overwrite">Apply my changes</button>
+    </span>`);
+  const banner = document.getElementById("dt-banner");
+  banner.querySelector('[data-banner="reload"]').addEventListener("click", () => {
+    const d = state.drawer;
+    const project = state.board.projects.find((p) => p.id === d.projectId);
+    if (!project) return;
+    Object.assign(d, { dirty: false, conflict: false, lastModified: project.marker.lastModified });
+    showBanner(null);
+    setSaveStatus("");
+    fillSettings(project);
+  });
+  banner.querySelector('[data-banner="overwrite"]').addEventListener("click", () => saveSettings({ force: true }));
+}
+
 function showBanner(html) {
   const banner = document.getElementById("dt-banner");
   if (!banner) return;
@@ -1048,7 +1257,8 @@ function onGlobalKey(e) {
     closeDrawer();
   } else if ((e.metaKey || e.ctrlKey) && e.key === "s" && d) {
     e.preventDefault();
-    saveNow();
+    if (d.mode === "settings") saveSettings();
+    else saveNow();
   } else if ((e.metaKey || e.ctrlKey) && e.key === "Enter" && d && d.mode === "create") {
     e.preventDefault();
     createFromDrawer();
