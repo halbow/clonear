@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync } from "node:fs";
 import { FORMAT_VERSION, initClonearMd } from "../app/lib/format.js";
-import { projectFromParts, ticketFromText } from "../app/lib/store.js";
+import { ReadOnlyBackend, directoryFromFiles, projectFromParts, ticketFromText } from "../app/lib/store.js";
 
 const md = (version) => `---\nversion: ${version}\n---\n`;
 
@@ -62,4 +62,43 @@ test("priority defaults to low when missing or unknown (including the old none)"
   for (const fm of ["", "priority: none\n", "priority: whatever\n"]) {
     assert.equal(ticketFromText("WEB-1", `---\ntitle: A\n${fm}---\n`).priority, "low", fm);
   }
+});
+
+// Files as <input webkitdirectory> gives them: the path starts with the picked folder.
+const picked = (files) =>
+  Object.entries(files).map(([path, text]) => {
+    const file = new File([text], path.split("/").pop(), { lastModified: 1 });
+    Object.defineProperty(file, "webkitRelativePath", { value: path });
+    return file;
+  });
+
+test("a picked folder is scanned like an opened one, read-only", async () => {
+  const root = directoryFromFiles(
+    picked({
+      "repo/tickets/clonear.md": `---\nversion: ${FORMAT_VERSION}\nname: Repo\n---\n`,
+      "repo/tickets/todo/R-1.md": "---\ntitle: First\npriority: high\n---\nBody",
+      "repo/tickets/done/R-2.md": "---\ntitle: Second\n---\n",
+      "repo/tickets/.hidden/R-3.md": "---\ntitle: Hidden\n---\n",
+    })
+  );
+  const backend = new ReadOnlyBackend(root);
+  assert.equal(backend.name, "repo");
+  assert.equal(backend.readonly, true);
+  const { projects, rejected } = await backend.scan();
+  assert.deepEqual(rejected, []);
+  assert.equal(projects.length, 1);
+  assert.equal(projects[0].name, "Repo");
+  const byColumn = Object.fromEntries(projects[0].columns.map((c) => [c.id, c.tickets.map((t) => t.title)]));
+  assert.deepEqual(byColumn, { todo: ["First"], "in-progress": [], "in-qa": [], done: ["Second"] });
+  const ticket = projects[0].columns[0].tickets[0];
+  assert.equal(ticket.priority, "high");
+  assert.equal(await backend.readText(ticket), "---\ntitle: First\npriority: high\n---\nBody");
+  await assert.rejects(backend.writeTicket(ticket, "x"), /read-only/);
+  await assert.rejects(backend.moveTicket(ticket, "done"), /read-only/);
+  await assert.rejects(backend.deleteTicket(ticket), /read-only/);
+  assert.equal((await backend.watch()).mode, "readonly");
+});
+
+test("picking an empty folder gives no tree", () => {
+  assert.equal(directoryFromFiles([]), null);
 });

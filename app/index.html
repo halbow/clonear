@@ -47,6 +47,8 @@
       <span id="ticket-count" class="ticket-count" hidden></span>
       <button id="open-folder" class="btn" title="Open a folder with a clonear.md">Open</button>
       <button id="create-project" class="btn" title="Pick a folder and make it a Clonear project">Create</button>
+      <!-- Folder picker for browsers without the File System Access API (read-only board). -->
+      <input id="folder-input" type="file" webkitdirectory multiple hidden />
     </header>
 
     <div id="notices" class="notices" hidden></div>

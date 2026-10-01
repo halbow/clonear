@@ -5,7 +5,9 @@ import {
   CONTAINER_DIRS,
   ConflictError,
   FsBackend,
+  ReadOnlyBackend,
   SIZES,
+  directoryFromFiles,
   fsSupported,
   loadHandle,
   loadRecentFolders,
@@ -50,6 +52,7 @@ const els = {
   notices: document.getElementById("notices"),
   openFolder: document.getElementById("open-folder"),
   createProject: document.getElementById("create-project"),
+  folderInput: document.getElementById("folder-input"),
   drawer: document.getElementById("drawer"),
   drawerOverlay: document.getElementById("drawer-overlay"),
   drawerContent: document.getElementById("drawer-content"),
@@ -66,6 +69,7 @@ async function boot() {
   els.select.addEventListener("change", onSelectChange);
   els.newTicket.addEventListener("click", () => openCreate(state.projectId));
   els.openFolder.addEventListener("click", pickFolder);
+  els.folderInput.addEventListener("change", openPickedFiles);
   els.createProject.addEventListener("click", createProject);
   els.search.addEventListener("input", () => {
     state.query = els.search.value;
@@ -92,7 +96,7 @@ async function boot() {
   window.addEventListener("beforeunload", (e) => {
     if (state.drawer && state.drawer.dirty) e.preventDefault();
   });
-  els.openFolder.hidden = els.createProject.hidden = !fsSupported;
+  els.createProject.hidden = !fsSupported;
 
   const stored = fsSupported ? await loadHandle() : null;
   if (stored) {
@@ -113,9 +117,19 @@ async function chooseDirectory() {
 }
 
 async function pickFolder() {
+  if (!fsSupported) return els.folderInput.click();
   const handle = await chooseDirectory();
   if (handle) connect(new FsBackend(handle));
 }
+
+// Without the File System Access API: a read-only snapshot of the picked folder.
+function openPickedFiles() {
+  const root = directoryFromFiles(els.folderInput.files);
+  els.folderInput.value = ""; // so picking the same folder again reloads it
+  if (root) connect(new ReadOnlyBackend(root));
+}
+
+const readOnly = () => !!(state.backend && state.backend.readonly);
 
 // Pick a folder and make it a project (clonear.md + column folders), then open it.
 async function createProject() {
@@ -148,8 +162,9 @@ async function connect(backend) {
   if (state.watcher) state.watcher.stop();
   closeDrawer();
   Object.assign(state, { backend, watcher: null, board: null, signature: "" });
-  await saveHandle(backend.root).catch(() => {});
-  state.otherFolders = await otherFolders(backend.root);
+  // A read-only snapshot can't be reopened later, so it isn't remembered.
+  if (!backend.readonly) await saveHandle(backend.root).catch(() => {});
+  state.otherFolders = backend.readonly ? [] : await otherFolders(backend.root);
   await refresh();
   if (state.backend !== backend || !state.board) return;
   state.watcher = await backend.watch(refresh);
@@ -158,7 +173,7 @@ async function connect(backend) {
 
 function disconnect(reason) {
   if (state.watcher) state.watcher.stop();
-  const stored = state.backend instanceof FsBackend ? state.backend.root : null;
+  const stored = state.backend && !state.backend.readonly ? state.backend.root : null;
   closeDrawer();
   Object.assign(state, { backend: null, watcher: null, board: null, signature: "" });
   renderNotices();
@@ -212,7 +227,7 @@ function applyBoard(board) {
   state.signature = signature;
   state.board = board;
   const names = board.projects.map((p) => ({ id: p.id, name: p.name }));
-  saveHandle(state.backend.root, names).catch(() => {});
+  if (!readOnly()) saveHandle(state.backend.root, names).catch(() => {});
 
   renderProjectSelect();
   renderNotices();
@@ -281,7 +296,7 @@ function renderTopbar() {
   const backend = state.backend;
   const hasBoard = !!(backend && state.board && state.board.projects.length);
   els.select.hidden = !hasBoard;
-  els.newTicket.hidden = !hasBoard;
+  els.newTicket.hidden = !hasBoard || readOnly();
   els.count.hidden = !hasBoard;
   els.searchBox.hidden = !hasBoard;
 
@@ -292,8 +307,11 @@ function renderTopbar() {
     els.sync.hidden = false;
     els.sync.className = `sync-status sync-${mode}`;
     els.sync.textContent = backend.name;
-    els.sync.title =
-      mode === "live" ? "Watching the folder for changes" : "Checking the folder for changes every 1.5s";
+    els.sync.title = {
+      live: "Watching the folder for changes",
+      polling: "Checking the folder for changes every 1.5s",
+      readonly: "Read-only snapshot: open the folder again to see changes made on disk",
+    }[mode];
   }
 }
 
@@ -319,11 +337,17 @@ function renderStart({ stored = null, reason = "", empty = false }) {
   renderTopbar();
   els.count.hidden = true;
   let body;
-  if (!fsSupported) {
+  if (!fsSupported && !empty) {
     body = `
-      <h2>Open this board in Chrome, Edge or Arc</h2>
-      <p>Clonear reads and writes your ticket folder with the File System Access API,
-      which only Chromium-based browsers support.</p>`;
+      <h2>Open a ticket folder (read-only)</h2>
+      <p>This browser can't write to folders, so the board is read-only here: you can browse
+      and search tickets, but not move, edit, create or delete them. To edit, open this board
+      in Chrome, Edge or Arc.</p>
+      <p>Pick the folder that holds your tickets: the one containing <code>tickets/</code>,
+      or a project folder with a <code>clonear.md</code>.</p>
+      <div class="start-actions">
+        <button class="btn btn-primary" data-action="pick">Open folder</button>
+      </div>`;
   } else if (empty) {
     const rejected = state.board ? state.board.rejected : [];
     body = `
@@ -331,7 +355,7 @@ function renderStart({ stored = null, reason = "", empty = false }) {
       <p>Each project folder needs a <code>clonear.md</code> next to its <code>todo/</code>,
       <code>done/</code>… subfolders. Pick a project folder, a folder of projects, or a
       folder containing <code>tickets/</code> or <code>projects/</code>. To start a new
-      project, use <strong>Create</strong>.</p>
+      project, use <strong>Create</strong>${fsSupported ? "" : " in Chrome, Edge or Arc"}.</p>
       ${
         rejected.length
           ? `<ul class="start-rejected">${rejected
@@ -344,7 +368,7 @@ function renderStart({ stored = null, reason = "", empty = false }) {
       }
       <div class="start-actions">
         <button class="btn btn-primary" data-action="pick">Choose another folder</button>
-        <button class="btn" data-action="create">Create a project</button>
+        ${fsSupported ? `<button class="btn" data-action="create">Create a project</button>` : ""}
       </div>`;
   } else if (stored) {
     body = `
@@ -381,6 +405,12 @@ function renderNotices() {
   const board = state.board;
   const items = [];
   if (board && board.projects.length) {
+    if (readOnly()) {
+      items.push(
+        `<div class="notice">Read-only: this browser can't write to folders. Open the board in Chrome, Edge
+        or Arc to edit tickets, and open the folder again here to see changes made on disk.</div>`
+      );
+    }
     board.rejected.forEach((r, i) =>
       items.push(
         `<div class="notice notice-warn">Skipped <strong>${escapeHtml(r.id)}</strong>: ${escapeHtml(r.reason)}${rejectedAction(r, i)}</div>`
@@ -399,7 +429,7 @@ function renderNotices() {
 }
 
 function rejectedAction(r, i) {
-  return r.action === "migrate" && r.dir
+  return r.action === "migrate" && r.dir && !readOnly()
     ? ` <button class="btn" data-rejected="${i}">Migrate to ${FORMAT_VERSION}</button>`
     : "";
 }
@@ -453,7 +483,11 @@ function renderBoard() {
       <div class="column-header">
         <span class="column-title">${escapeHtml(col.label)}</span>
         <span class="column-count">${tickets.length}</span>
-        <button class="column-add" title="New ticket in ${escapeAttr(col.label)}" aria-label="New ticket in ${escapeAttr(col.label)}">+</button>
+        ${
+          readOnly()
+            ? ""
+            : `<button class="column-add" title="New ticket in ${escapeAttr(col.label)}" aria-label="New ticket in ${escapeAttr(col.label)}">+</button>`
+        }
       </div>
       <div class="column-cards"></div>
     `;
@@ -463,8 +497,10 @@ function renderBoard() {
     } else {
       for (const ticket of tickets) cardsEl.appendChild(renderCard(ticket));
     }
-    column.querySelector(".column-add").addEventListener("click", () => openCreate(project.id, col.id));
-    bindDropTarget(column, project.id, col.id);
+    if (!readOnly()) {
+      column.querySelector(".column-add").addEventListener("click", () => openCreate(project.id, col.id));
+      bindDropTarget(column, project.id, col.id);
+    }
     els.board.appendChild(column);
   }
   els.count.hidden = false;
@@ -507,6 +543,7 @@ function renderCard(ticket) {
     }
   });
 
+  if (readOnly()) return card;
   card.draggable = true;
   card.addEventListener("dragstart", (e) => {
     state.dragging = { projectId: ticket.projectId, ticketId: ticket.id };
@@ -587,7 +624,7 @@ function openTicket(projectId, ticketId) {
     saveTimer: null,
     conflict: false,
     deleted: false,
-    bodyMode: ticket.body.trim() ? "preview" : "write",
+    bodyMode: ticket.body.trim() || readOnly() ? "preview" : "write",
   };
   buildDrawer();
   fillDrawer(ticket);
@@ -595,6 +632,7 @@ function openTicket(projectId, ticketId) {
 }
 
 function openCreate(projectId, columnId) {
+  if (readOnly()) return;
   const project = state.board.projects.find((p) => p.id === projectId);
   if (!project) return;
   if (state.drawer) closeDrawer();
@@ -648,7 +686,7 @@ function buildDrawer() {
       <label><span>Labels</span><input id="f-labels" placeholder="bug, auth" /></label>
       <label id="f-created-row"><span>Created</span><span id="f-created" class="dt-static"></span></label>
     </div>
-    <div class="dt-tabs">
+    <div class="dt-tabs" ${readOnly() ? "hidden" : ""}>
       <button type="button" data-mode="write">Write</button>
       <button type="button" data-mode="preview">Preview</button>
     </div>
@@ -661,7 +699,9 @@ function buildDrawer() {
           d.mode === "create"
             ? `<button type="button" class="btn" data-action="cancel">Cancel</button>
                <button type="button" class="btn btn-primary" data-action="create">Create ticket</button>`
-            : `<button type="button" class="btn btn-danger" data-action="delete">Delete</button>`
+            : readOnly()
+              ? ""
+              : `<button type="button" class="btn btn-danger" data-action="delete">Delete</button>`
         }
       </span>
     </div>
@@ -670,6 +710,10 @@ function buildDrawer() {
   const $ = (id) => document.getElementById(id);
   const title = $("f-title");
   autoGrow(title);
+  if (readOnly()) {
+    for (const id of ["f-title", "f-assignee", "f-labels"]) $(id).readOnly = true;
+    for (const id of ["f-column", "f-priority", "f-size"]) $(id).disabled = true;
+  }
   title.addEventListener("keydown", (e) => {
     if (e.key === "Enter") e.preventDefault(); // titles are single-line
   });
@@ -685,7 +729,7 @@ function buildDrawer() {
   });
   $("f-body").addEventListener("input", () => autoGrow($("f-body")));
   $("f-preview").addEventListener("click", (e) => {
-    if (!e.target.closest("a")) setBodyMode("write", { focus: true });
+    if (!e.target.closest("a") && !readOnly()) setBodyMode("write", { focus: true });
   });
   els.drawerContent.querySelectorAll(".dt-tabs button").forEach((b) =>
     b.addEventListener("click", () => setBodyMode(b.dataset.mode, { focus: b.dataset.mode === "write" }))
@@ -795,7 +839,7 @@ function readForm() {
 
 function onFieldInput() {
   const d = state.drawer;
-  if (!d || d.mode !== "edit") return;
+  if (!d || d.mode !== "edit" || readOnly()) return;
   d.dirty = true;
   d.version++;
   setSaveStatus("Unsaved");
@@ -1018,7 +1062,7 @@ function onGlobalKey(e) {
   } else if (
     e.key === "c" && !d && !e.metaKey && !e.ctrlKey && !e.altKey &&
     !e.target.closest("input, textarea, select") &&
-    state.backend && currentProject()
+    state.backend && !readOnly() && currentProject()
   ) {
     e.preventDefault();
     openCreate(state.projectId);

@@ -12,3 +12,6 @@ Use it either way:
 - **Online:** go to <https://kanban.lofiso.app>.
 
 Then click **Open folder** and pick the folder that holds your tickets.
+
+Safari and Firefox can't write to folders, so there the board is read-only: you
+can browse and search tickets, but not move, edit, create or delete them.

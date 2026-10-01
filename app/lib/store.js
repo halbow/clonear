@@ -1,5 +1,7 @@
 // Board storage: a local folder opened with the File System Access API
 // (showDirectoryPicker). Read-write, watches the folder for outside changes.
+// Browsers without that API (Safari, Firefox) get ReadOnlyBackend: a snapshot
+// of a folder picked with <input type="file" webkitdirectory>.
 // FsBackend exposes this shape to the UI:
 //
 //   scan()                         -> { projects: [{ id, name, version, newer, columns: [{ id, label, tickets }] }],
@@ -12,7 +14,8 @@
 //   deleteTicket(ticket)
 //   initProject(name)              -> makes the root a project: clonear.md + column folders
 //   migrateProject(dir)            -> rewrites clonear.md and its tickets to FORMAT_VERSION
-//   watch(onChange)                -> { mode, stop }
+//   watch(onChange)                -> { mode, stop }       mode: "live" | "polling" | "readonly"
+//   readonly                       -> true when every write above throws
 //
 // Data model: <projects root>/<project>/<column>/<TICKET-ID>.md. Every project
 // folder needs a <project>/clonear.md: it marks the folder as a Clonear
@@ -151,6 +154,10 @@ export class FsBackend {
 
   get name() {
     return this.root.name;
+  }
+
+  get readonly() {
+    return false;
   }
 
   async hasPermission() {
@@ -350,6 +357,79 @@ export class FsBackend {
     };
   }
 }
+
+// --------------------------------------------------------------------------- //
+// Read-only backend: the files of a folder picked with <input webkitdirectory>
+// --------------------------------------------------------------------------- //
+
+// Build a directory tree from the picked files, shaped like the parts of
+// FileSystemDirectoryHandle / FileSystemFileHandle that scan() uses, so the
+// same scanning code reads it. Each file's webkitRelativePath starts with the
+// picked folder's name.
+export function directoryFromFiles(files) {
+  const dir = (name) => ({
+    kind: "directory",
+    name,
+    children: new Map(),
+    async *entries() {
+      yield* this.children;
+    },
+  });
+  let root = null;
+  for (const file of files) {
+    const parts = (file.webkitRelativePath || file.name).split("/");
+    root ||= dir(parts[0]);
+    let node = root;
+    for (const part of parts.slice(1, -1)) {
+      if (!node.children.has(part)) node.children.set(part, dir(part));
+      node = node.children.get(part);
+    }
+    const name = parts[parts.length - 1];
+    node.children.set(name, { kind: "file", name, getFile: async () => file });
+  }
+  return root;
+}
+
+export class ReadOnlyBackend extends FsBackend {
+  get readonly() {
+    return true;
+  }
+
+  async hasPermission() {
+    return true;
+  }
+
+  async writeTicket() {
+    throw readOnlyError();
+  }
+
+  async moveTicket() {
+    throw readOnlyError();
+  }
+
+  async createTicket() {
+    throw readOnlyError();
+  }
+
+  async deleteTicket() {
+    throw readOnlyError();
+  }
+
+  async initProject() {
+    throw readOnlyError();
+  }
+
+  async migrateProject() {
+    throw readOnlyError();
+  }
+
+  // A snapshot never changes; reopening the folder picks up outside changes.
+  async watch() {
+    return { mode: "readonly", stop() {} };
+  }
+}
+
+const readOnlyError = () => new Error("This board is read-only in this browser.");
 
 async function writeFile(handle, text) {
   const writable = await handle.createWritable();
