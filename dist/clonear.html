@@ -11,7 +11,7 @@
     -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'none'; script-src 'sha256-YY2XfNYvdm6JGGROG4OumjGZFPP3TV252CzIz/BNODY=' 'sha256-K9vBN/KKjOun1eQLTtwuNSEzzAi4gAUuTkjwI7UF/Ns='; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
+      content="default-src 'none'; script-src 'sha256-YY2XfNYvdm6JGGROG4OumjGZFPP3TV252CzIz/BNODY=' 'sha256-jz/JsoiJsGifnoVvZ7eVYkpg5pkfaT3d27hgkCYtVg0='; style-src 'self' 'unsafe-inline'; img-src data:; connect-src 'none'; form-action 'none'; base-uri 'none'"
     />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Clonear</title>
@@ -1020,7 +1020,7 @@ const __mod_lib_store = (() => {
 //   moveTicket(ticket, columnId)   -> { lastModified }
 //   createTicket(project, columnId, id, raw)
 //   deleteTicket(ticket)
-//   initProject()                  -> makes the root a project: clonear.md + column folders
+//   initProject(name)              -> makes the root a project: clonear.md + column folders
 //   migrateProject(dir)            -> rewrites clonear.md and its tickets to FORMAT_VERSION
 //   watch(onChange)                -> { mode, stop }
 //
@@ -1296,12 +1296,12 @@ class FsBackend {
     this.cache.delete(ticket.path);
   }
 
-  // Make the root folder a project: clonear.md at the current format version,
-  // plus the default column folders.
-  async initProject() {
+  // Make the root folder a project named `name`: clonear.md at the current
+  // format version, plus the default column folders.
+  async initProject(name) {
     const root = this.root;
     if (await fileExists(root, MARKER_FILE)) throw new Error(`${root.name}/${MARKER_FILE} already exists.`);
-    const md = initClonearMd({ name: titleize(root.name), prefix: defaultPrefix(root.name) });
+    const md = initClonearMd({ name, prefix: defaultPrefix(name) });
     for (const col of DEFAULT_COLUMNS) await root.getDirectoryHandle(col, { create: true });
     await writeFile(await root.getFileHandle(MARKER_FILE, { create: true }), md);
   }
@@ -1376,10 +1376,13 @@ async function fileExists(dir, name) {
 }
 
 // --------------------------------------------------------------------------- //
-// Remember the opened folder per page URL (IndexedDB can store handles).
+// Remember the opened folder, and the recently opened ones with their
+// projects, per page URL (IndexedDB can store handles).
 // --------------------------------------------------------------------------- //
 const DB_NAME = "clonear";
+const MAX_RECENT = 8;
 const handleKey = () => location.origin + location.pathname;
+const recentKey = () => `${handleKey()}#folders`;
 
 function withStore(mode, fn) {
   return new Promise((resolve, reject) => {
@@ -1395,11 +1398,37 @@ function withStore(mode, fn) {
   });
 }
 
-const saveHandle = (handle) => withStore("readwrite", (s) => s.put(handle, handleKey()));
+// Saves `handle` as the folder to reopen, and moves it to the front of the
+// recent folders. `projects` ([{ id, name }]) replaces the ones remembered
+// for it; without it they are kept. Saves run one at a time, so two
+// read-modify-writes of the list can't drop a folder.
+let saving = Promise.resolve();
+function saveHandle(handle, projects = null) {
+  saving = saving.catch(() => {}).then(() => writeRecent(handle, projects));
+  return saving;
+}
+
+async function writeRecent(handle, projects) {
+  const others = [];
+  let known = [];
+  for (const f of await loadRecentFolders()) {
+    if (await f.handle.isSameEntry(handle).catch(() => false)) known = f.projects;
+    else others.push(f);
+  }
+  const recent = [{ handle, projects: projects || known }, ...others].slice(0, MAX_RECENT);
+  return withStore("readwrite", (s) => {
+    s.put(recent, recentKey());
+    return s.put(handle, handleKey());
+  });
+}
+
+// [{ handle, projects: [{ id, name }] }], most recently opened first.
+const loadRecentFolders = () =>
+  withStore("readonly", (s) => s.get(recentKey())).then((r) => r || [], () => []);
 const loadHandle = () => withStore("readonly", (s) => s.get(handleKey())).catch(() => null);
 const forgetHandle = () => withStore("readwrite", (s) => s.delete(handleKey()));
 
-return { MARKER_FILE, SIZES, ConflictError, titleize, ticketFromText, nextTicketId, defaultPrefix, projectFromParts, fsSupported, FsBackend, saveHandle, loadHandle, forgetHandle };
+return { MARKER_FILE, SIZES, CONTAINER_DIRS, ConflictError, titleize, ticketFromText, nextTicketId, defaultPrefix, projectFromParts, fsSupported, FsBackend, saveHandle, loadRecentFolders, loadHandle, forgetHandle };
 })();
 
 // ---- app/app.js ----
@@ -1407,7 +1436,7 @@ return { MARKER_FILE, SIZES, ConflictError, titleize, ticketFromText, nextTicket
 const { renderMarkdown, updateTicketText } = __mod_lib_frontmatter;
 const { FORMAT_VERSION } = __mod_lib_format;
 const { scoreTicket } = __mod_lib_search;
-const { ConflictError, FsBackend, SIZES, fsSupported, loadHandle, nextTicketId, saveHandle, ticketFromText } = __mod_lib_store;
+const { CONTAINER_DIRS, ConflictError, FsBackend, SIZES, fsSupported, loadHandle, loadRecentFolders, nextTicketId, saveHandle, ticketFromText, titleize } = __mod_lib_store;
 const PRIORITIES = {
   urgent: { label: "Urgent", cls: "prio-urgent" },
   high: { label: "High", cls: "prio-high" },
@@ -1423,12 +1452,13 @@ const state = {
   board: null, // { projects }
   signature: "",
   projectId: null,
-  scanning: null, // in-flight refresh promise
+  scanning: null, // in-flight refresh: { backend, promise }
   rescan: false,
   dragging: null, // { projectId, ticketId }
   renderPending: false,
   drawer: null, // see openTicket / openCreate
   query: "", // top-bar search
+  otherFolders: [], // recently opened folders other than the current one: [{ handle, projects }]
 };
 
 const els = {
@@ -1455,7 +1485,7 @@ boot();
 // Startup & connection
 // --------------------------------------------------------------------------- //
 async function boot() {
-  els.select.addEventListener("change", () => selectProject(els.select.value, { pushUrl: true }));
+  els.select.addEventListener("change", onSelectChange);
   els.newTicket.addEventListener("click", () => openCreate(state.projectId));
   els.openFolder.addEventListener("click", pickFolder);
   els.createProject.addEventListener("click", createProject);
@@ -1506,37 +1536,42 @@ async function chooseDirectory() {
 
 async function pickFolder() {
   const handle = await chooseDirectory();
-  if (!handle) return;
-  await saveHandle(handle).catch(() => {});
-  connect(new FsBackend(handle));
+  if (handle) connect(new FsBackend(handle));
 }
 
 // Pick a folder and make it a project (clonear.md + column folders), then open it.
 async function createProject() {
   const handle = await chooseDirectory();
   if (!handle) return;
+  // tickets/ or projects/ says nothing about the project, so don't suggest it.
+  const suggested = CONTAINER_DIRS.includes(handle.name) ? "" : titleize(handle.name);
+  const name = (prompt(`Name of the project in “${handle.name}”:`, suggested) || "").trim();
+  if (!name) return;
   const backend = new FsBackend(handle);
   try {
-    await backend.initProject();
+    await backend.initProject(name);
     toast(`Created ${handle.name}/clonear.md (version ${FORMAT_VERSION}).`);
   } catch (err) {
     toast(`Could not create the project: ${err.message}`, "error");
     return;
   }
-  await saveHandle(handle).catch(() => {});
   connect(backend);
 }
 
-async function reconnect(handle) {
+// `projectId`: the project to show once the folder is open.
+async function reconnect(handle, projectId = null) {
   const perm = await handle.requestPermission({ mode: "readwrite" }).catch(() => "denied");
-  if (perm === "granted") connect(new FsBackend(handle));
-  else toast("Permission to the folder was not granted.", "error");
+  if (perm !== "granted") return toast("Permission to the folder was not granted.", "error");
+  if (projectId) location.hash = `project=${encodeURIComponent(projectId)}`;
+  connect(new FsBackend(handle));
 }
 
 async function connect(backend) {
   if (state.watcher) state.watcher.stop();
   closeDrawer();
   Object.assign(state, { backend, watcher: null, board: null, signature: "" });
+  await saveHandle(backend.root).catch(() => {});
+  state.otherFolders = await otherFolders(backend.root);
   await refresh();
   if (state.backend !== backend || !state.board) return;
   state.watcher = await backend.watch(refresh);
@@ -1553,14 +1588,18 @@ function disconnect(reason) {
 }
 
 // Rescan the backend; coalesces overlapping calls into one extra pass.
+// A scan of a folder that was since switched away from is left to finish on
+// its own (its result is dropped), so the new folder gets scanned right away.
 function refresh() {
-  if (!state.backend) return Promise.resolve();
-  if (state.scanning) {
-    state.rescan = true;
-    return state.scanning;
-  }
   const backend = state.backend;
-  state.scanning = (async () => {
+  if (!backend) return Promise.resolve();
+  if (state.scanning && state.scanning.backend === backend) {
+    state.rescan = true;
+    return state.scanning.promise;
+  }
+  const scan = { backend, promise: null };
+  state.scanning = scan;
+  scan.promise = (async () => {
     try {
       do {
         state.rescan = false;
@@ -1575,10 +1614,10 @@ function refresh() {
         toast(`Could not read the folder: ${err.message}`, "error");
       }
     } finally {
-      state.scanning = null;
+      if (state.scanning === scan) state.scanning = null;
     }
   })();
-  return state.scanning;
+  return scan.promise;
 }
 
 function applyBoard(board) {
@@ -1594,6 +1633,8 @@ function applyBoard(board) {
   if (signature === state.signature) return;
   state.signature = signature;
   state.board = board;
+  const names = board.projects.map((p) => ({ id: p.id, name: p.name }));
+  saveHandle(state.backend.root, names).catch(() => {});
 
   renderProjectSelect();
   renderNotices();
@@ -1622,6 +1663,23 @@ function selectProject(projectId, { pushUrl }) {
   els.select.value = projectId;
   if (pushUrl) location.hash = `project=${encodeURIComponent(projectId)}`;
   renderBoard();
+}
+
+async function otherFolders(root) {
+  const others = [];
+  for (const f of await loadRecentFolders()) {
+    if (!(await f.handle.isSameEntry(root).catch(() => false))) others.push(f);
+  }
+  return others;
+}
+
+// The dropdown lists the open folder's projects, then the projects of the
+// other recent folders ("folder:<index>:<projectId>").
+function onSelectChange() {
+  const match = /^folder:(\d+):(.*)$/.exec(els.select.value);
+  if (!match) return selectProject(els.select.value, { pushUrl: true });
+  els.select.value = state.projectId;
+  reconnect(state.otherFolders[Number(match[1])].handle, match[2] || null);
 }
 
 function currentProject() {
@@ -1663,9 +1721,18 @@ function renderTopbar() {
 
 function renderProjectSelect() {
   const projects = state.board ? state.board.projects : [];
-  els.select.innerHTML = projects
+  const options = projects
     .map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`)
     .join("");
+  // A folder whose projects aren't known yet shows under its own name.
+  const others = state.otherFolders
+    .flatMap(({ handle, projects }, i) =>
+      (projects.length ? projects : [{ id: "", name: handle.name }]).map(
+        (p) => `<option value="folder:${i}:${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`
+      )
+    )
+    .join("");
+  els.select.innerHTML = others ? `${options}<hr>${others}` : options;
   if (state.projectId) els.select.value = state.projectId;
   renderTopbar();
 }

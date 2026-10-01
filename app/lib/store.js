@@ -10,7 +10,7 @@
 //   moveTicket(ticket, columnId)   -> { lastModified }
 //   createTicket(project, columnId, id, raw)
 //   deleteTicket(ticket)
-//   initProject()                  -> makes the root a project: clonear.md + column folders
+//   initProject(name)              -> makes the root a project: clonear.md + column folders
 //   migrateProject(dir)            -> rewrites clonear.md and its tickets to FORMAT_VERSION
 //   watch(onChange)                -> { mode, stop }
 //
@@ -28,7 +28,7 @@ const PRIORITY_ORDER = { urgent: 0, high: 1, medium: 2, low: 3 };
 export const SIZES = ["S", "M", "L"];
 const ACRONYMS = new Set(["qa", "ui", "ci", "api", "id", "ux"]);
 // Folders that can hold projects when the user picks a repo root.
-const CONTAINER_DIRS = ["projects", "tickets"];
+export const CONTAINER_DIRS = ["projects", "tickets"];
 const SKIP_DIRS = new Set(["node_modules", "dist", "build"]);
 
 export class ConflictError extends Error {
@@ -287,12 +287,12 @@ export class FsBackend {
     this.cache.delete(ticket.path);
   }
 
-  // Make the root folder a project: clonear.md at the current format version,
-  // plus the default column folders.
-  async initProject() {
+  // Make the root folder a project named `name`: clonear.md at the current
+  // format version, plus the default column folders.
+  async initProject(name) {
     const root = this.root;
     if (await fileExists(root, MARKER_FILE)) throw new Error(`${root.name}/${MARKER_FILE} already exists.`);
-    const md = initClonearMd({ name: titleize(root.name), prefix: defaultPrefix(root.name) });
+    const md = initClonearMd({ name, prefix: defaultPrefix(name) });
     for (const col of DEFAULT_COLUMNS) await root.getDirectoryHandle(col, { create: true });
     await writeFile(await root.getFileHandle(MARKER_FILE, { create: true }), md);
   }
@@ -367,10 +367,13 @@ async function fileExists(dir, name) {
 }
 
 // --------------------------------------------------------------------------- //
-// Remember the opened folder per page URL (IndexedDB can store handles).
+// Remember the opened folder, and the recently opened ones with their
+// projects, per page URL (IndexedDB can store handles).
 // --------------------------------------------------------------------------- //
 const DB_NAME = "clonear";
+const MAX_RECENT = 8;
 const handleKey = () => location.origin + location.pathname;
+const recentKey = () => `${handleKey()}#folders`;
 
 function withStore(mode, fn) {
   return new Promise((resolve, reject) => {
@@ -386,6 +389,32 @@ function withStore(mode, fn) {
   });
 }
 
-export const saveHandle = (handle) => withStore("readwrite", (s) => s.put(handle, handleKey()));
+// Saves `handle` as the folder to reopen, and moves it to the front of the
+// recent folders. `projects` ([{ id, name }]) replaces the ones remembered
+// for it; without it they are kept. Saves run one at a time, so two
+// read-modify-writes of the list can't drop a folder.
+let saving = Promise.resolve();
+export function saveHandle(handle, projects = null) {
+  saving = saving.catch(() => {}).then(() => writeRecent(handle, projects));
+  return saving;
+}
+
+async function writeRecent(handle, projects) {
+  const others = [];
+  let known = [];
+  for (const f of await loadRecentFolders()) {
+    if (await f.handle.isSameEntry(handle).catch(() => false)) known = f.projects;
+    else others.push(f);
+  }
+  const recent = [{ handle, projects: projects || known }, ...others].slice(0, MAX_RECENT);
+  return withStore("readwrite", (s) => {
+    s.put(recent, recentKey());
+    return s.put(handle, handleKey());
+  });
+}
+
+// [{ handle, projects: [{ id, name }] }], most recently opened first.
+export const loadRecentFolders = () =>
+  withStore("readonly", (s) => s.get(recentKey())).then((r) => r || [], () => []);
 export const loadHandle = () => withStore("readonly", (s) => s.get(handleKey())).catch(() => null);
 export const forgetHandle = () => withStore("readwrite", (s) => s.delete(handleKey()));

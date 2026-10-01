@@ -2,14 +2,17 @@ import { renderMarkdown, updateTicketText } from "./lib/frontmatter.js";
 import { FORMAT_VERSION } from "./lib/format.js";
 import { scoreTicket } from "./lib/search.js";
 import {
+  CONTAINER_DIRS,
   ConflictError,
   FsBackend,
   SIZES,
   fsSupported,
   loadHandle,
+  loadRecentFolders,
   nextTicketId,
   saveHandle,
   ticketFromText,
+  titleize,
 } from "./lib/store.js";
 
 const PRIORITIES = {
@@ -27,12 +30,13 @@ const state = {
   board: null, // { projects }
   signature: "",
   projectId: null,
-  scanning: null, // in-flight refresh promise
+  scanning: null, // in-flight refresh: { backend, promise }
   rescan: false,
   dragging: null, // { projectId, ticketId }
   renderPending: false,
   drawer: null, // see openTicket / openCreate
   query: "", // top-bar search
+  otherFolders: [], // recently opened folders other than the current one: [{ handle, projects }]
 };
 
 const els = {
@@ -59,7 +63,7 @@ boot();
 // Startup & connection
 // --------------------------------------------------------------------------- //
 async function boot() {
-  els.select.addEventListener("change", () => selectProject(els.select.value, { pushUrl: true }));
+  els.select.addEventListener("change", onSelectChange);
   els.newTicket.addEventListener("click", () => openCreate(state.projectId));
   els.openFolder.addEventListener("click", pickFolder);
   els.createProject.addEventListener("click", createProject);
@@ -110,37 +114,42 @@ async function chooseDirectory() {
 
 async function pickFolder() {
   const handle = await chooseDirectory();
-  if (!handle) return;
-  await saveHandle(handle).catch(() => {});
-  connect(new FsBackend(handle));
+  if (handle) connect(new FsBackend(handle));
 }
 
 // Pick a folder and make it a project (clonear.md + column folders), then open it.
 async function createProject() {
   const handle = await chooseDirectory();
   if (!handle) return;
+  // tickets/ or projects/ says nothing about the project, so don't suggest it.
+  const suggested = CONTAINER_DIRS.includes(handle.name) ? "" : titleize(handle.name);
+  const name = (prompt(`Name of the project in “${handle.name}”:`, suggested) || "").trim();
+  if (!name) return;
   const backend = new FsBackend(handle);
   try {
-    await backend.initProject();
+    await backend.initProject(name);
     toast(`Created ${handle.name}/clonear.md (version ${FORMAT_VERSION}).`);
   } catch (err) {
     toast(`Could not create the project: ${err.message}`, "error");
     return;
   }
-  await saveHandle(handle).catch(() => {});
   connect(backend);
 }
 
-async function reconnect(handle) {
+// `projectId`: the project to show once the folder is open.
+async function reconnect(handle, projectId = null) {
   const perm = await handle.requestPermission({ mode: "readwrite" }).catch(() => "denied");
-  if (perm === "granted") connect(new FsBackend(handle));
-  else toast("Permission to the folder was not granted.", "error");
+  if (perm !== "granted") return toast("Permission to the folder was not granted.", "error");
+  if (projectId) location.hash = `project=${encodeURIComponent(projectId)}`;
+  connect(new FsBackend(handle));
 }
 
 async function connect(backend) {
   if (state.watcher) state.watcher.stop();
   closeDrawer();
   Object.assign(state, { backend, watcher: null, board: null, signature: "" });
+  await saveHandle(backend.root).catch(() => {});
+  state.otherFolders = await otherFolders(backend.root);
   await refresh();
   if (state.backend !== backend || !state.board) return;
   state.watcher = await backend.watch(refresh);
@@ -157,14 +166,18 @@ function disconnect(reason) {
 }
 
 // Rescan the backend; coalesces overlapping calls into one extra pass.
+// A scan of a folder that was since switched away from is left to finish on
+// its own (its result is dropped), so the new folder gets scanned right away.
 function refresh() {
-  if (!state.backend) return Promise.resolve();
-  if (state.scanning) {
-    state.rescan = true;
-    return state.scanning;
-  }
   const backend = state.backend;
-  state.scanning = (async () => {
+  if (!backend) return Promise.resolve();
+  if (state.scanning && state.scanning.backend === backend) {
+    state.rescan = true;
+    return state.scanning.promise;
+  }
+  const scan = { backend, promise: null };
+  state.scanning = scan;
+  scan.promise = (async () => {
     try {
       do {
         state.rescan = false;
@@ -179,10 +192,10 @@ function refresh() {
         toast(`Could not read the folder: ${err.message}`, "error");
       }
     } finally {
-      state.scanning = null;
+      if (state.scanning === scan) state.scanning = null;
     }
   })();
-  return state.scanning;
+  return scan.promise;
 }
 
 function applyBoard(board) {
@@ -198,6 +211,8 @@ function applyBoard(board) {
   if (signature === state.signature) return;
   state.signature = signature;
   state.board = board;
+  const names = board.projects.map((p) => ({ id: p.id, name: p.name }));
+  saveHandle(state.backend.root, names).catch(() => {});
 
   renderProjectSelect();
   renderNotices();
@@ -226,6 +241,23 @@ function selectProject(projectId, { pushUrl }) {
   els.select.value = projectId;
   if (pushUrl) location.hash = `project=${encodeURIComponent(projectId)}`;
   renderBoard();
+}
+
+async function otherFolders(root) {
+  const others = [];
+  for (const f of await loadRecentFolders()) {
+    if (!(await f.handle.isSameEntry(root).catch(() => false))) others.push(f);
+  }
+  return others;
+}
+
+// The dropdown lists the open folder's projects, then the projects of the
+// other recent folders ("folder:<index>:<projectId>").
+function onSelectChange() {
+  const match = /^folder:(\d+):(.*)$/.exec(els.select.value);
+  if (!match) return selectProject(els.select.value, { pushUrl: true });
+  els.select.value = state.projectId;
+  reconnect(state.otherFolders[Number(match[1])].handle, match[2] || null);
 }
 
 function currentProject() {
@@ -267,9 +299,18 @@ function renderTopbar() {
 
 function renderProjectSelect() {
   const projects = state.board ? state.board.projects : [];
-  els.select.innerHTML = projects
+  const options = projects
     .map((p) => `<option value="${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`)
     .join("");
+  // A folder whose projects aren't known yet shows under its own name.
+  const others = state.otherFolders
+    .flatMap(({ handle, projects }, i) =>
+      (projects.length ? projects : [{ id: "", name: handle.name }]).map(
+        (p) => `<option value="folder:${i}:${escapeAttr(p.id)}">${escapeHtml(p.name)}</option>`
+      )
+    )
+    .join("");
+  els.select.innerHTML = others ? `${options}<hr>${others}` : options;
   if (state.projectId) els.select.value = state.projectId;
   renderTopbar();
 }
