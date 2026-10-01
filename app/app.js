@@ -587,7 +587,14 @@ function buildDrawer() {
 
   els.drawerContent.innerHTML = `
     <div class="dt-bar">
-      <span class="dt-id" id="f-id"></span>
+      <span class="dt-id-group">
+        <span class="dt-id" id="f-id"></span>
+        ${
+          d.mode === "create"
+            ? ""
+            : `<button type="button" class="dt-copy" id="f-copy-id" title="Copy ticket ID" aria-label="Copy ticket ID">${COPY_ICON}</button>`
+        }
+      </span>
       <span class="dt-save" id="dt-save"></span>
     </div>
     <div class="dt-banner" id="dt-banner" hidden></div>
@@ -643,6 +650,8 @@ function buildDrawer() {
     b.addEventListener("click", () => setBodyMode(b.dataset.mode, { focus: b.dataset.mode === "write" }))
   );
 
+  if ($("f-copy-id")) $("f-copy-id").addEventListener("click", copyTicketId);
+
   const action = (name) => els.drawerContent.querySelector(`[data-action="${name}"]`);
   if (action("cancel")) action("cancel").addEventListener("click", closeDrawer);
   if (action("create")) action("create").addEventListener("click", createFromDrawer);
@@ -662,6 +671,30 @@ function buildDrawer() {
       deleteFromDrawer();
     });
   }
+}
+
+const COPY_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><rect x="5" y="5" width="9" height="9" rx="1.5" fill="none" stroke="currentColor" stroke-width="1.5"/><path d="M11 5V3.5A1.5 1.5 0 0 0 9.5 2h-6A1.5 1.5 0 0 0 2 3.5v6A1.5 1.5 0 0 0 3.5 11H5" fill="none" stroke="currentColor" stroke-width="1.5"/></svg>`;
+const CHECK_ICON = `<svg viewBox="0 0 16 16" width="14" height="14" aria-hidden="true"><path d="M3 8.5l3 3 7-7" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+
+async function copyTicketId() {
+  const btn = document.getElementById("f-copy-id");
+  const id = state.drawer?.ticketId;
+  if (!btn || !id) return;
+  try {
+    await navigator.clipboard.writeText(id);
+  } catch {
+    toast("Couldn't copy to the clipboard.", "error");
+    return;
+  }
+  btn.innerHTML = CHECK_ICON;
+  btn.title = "Copied";
+  btn.classList.add("copied");
+  clearTimeout(btn.resetTimer);
+  btn.resetTimer = setTimeout(() => {
+    btn.innerHTML = COPY_ICON;
+    btn.title = "Copy ticket ID";
+    btn.classList.remove("copied");
+  }, 1500);
 }
 
 function fillDrawer(t) {
